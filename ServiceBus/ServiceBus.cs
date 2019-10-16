@@ -11,11 +11,11 @@ namespace Aether.ServiceBus
 {
     /// <summary>
     /// This is one of the heart pieces of the Aether project. It contains the <see cref="IMqttClient"/> for the
-    /// communication with the mqtt message broker, as well as the registry for the <see cref="ICommandProcessor"/>.
+    /// communication with the mqtt message broker, as well as the registry for the <see cref="IMessageProcessor"/>.
     /// With each incoming message the registry is traversed to forward the message to all methods that have subscribed
     /// to the topic.
     /// </summary>
-    public class MqttServiceBus
+    public class ServiceBus
     {
         #region Private Fields
 
@@ -39,7 +39,7 @@ namespace Aether.ServiceBus
         /// The main constructor.
         /// </summary>
         /// <param name="connectionString">The connection string to the mqtt message broker.</param>
-        public MqttServiceBus(string connectionString)
+        public ServiceBus(string connectionString)
         {
             _bus = MqttClient.CreateAsync(connectionString).Result;
             var ss = _bus.ConnectAsync().Result;
@@ -50,29 +50,29 @@ namespace Aether.ServiceBus
         #region Public Methods
 
         /// <summary>
-        /// Top level method for registering a <see cref="ICommandProcessor"/>. Arbitrarily many
-        /// <see cref="ICommandProcessor"/> can be registered.
+        /// Top level method for registering a <see cref="IMessageProcessor"/>. Arbitrarily many
+        /// <see cref="IMessageProcessor"/> can be registered.
         /// </summary>
-        /// <param name="commandProcessor">The <see cref="ICommandProcessor"/> that contains the methods, that are being
+        /// <param name="messageProcessor">The <see cref="IMessageProcessor"/> that contains the methods, that are being
         /// called when new messages arrive from the mqtt message bus.</param>
-        public void RegisterCommandProcessor(ICommandProcessor commandProcessor)
+        public void RegisterMessageProcessor(IMessageProcessor messageProcessor)
         {
-            Register(commandProcessor);
+            Register(messageProcessor);
 
-            SubscribeToTopics(commandProcessor);
+            SubscribeToTopics(messageProcessor);
 
             Subscribe();
         }
 
         /// <summary>
         /// Here we subscribe to all the topics of interest. To do so, we first iterate over all methods of the
-        /// <see cref="ICommandProcessor"/> to find the methods with the <see cref="PubSubAttribute"/>. We then extract
+        /// <see cref="IMessageProcessor"/> to find the methods with the <see cref="PubSubAttribute"/>. We then extract
         /// all the topics and register them at the mqtt message bus.
         /// </summary>
-        /// <param name="commandProcessor">The <see cref="ICommandProcessor"/> that is being registered.</param>
-        private void SubscribeToTopics(ICommandProcessor commandProcessor)
+        /// <param name="messageProcessor">The <see cref="IMessageProcessor"/> that is being registered.</param>
+        private void SubscribeToTopics(IMessageProcessor messageProcessor)
             =>
-                commandProcessor.GetType()
+                messageProcessor.GetType()
                     .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                     .Where(method => method.IsDefined(typeof(PubSubAttribute)))
                     .SelectMany(method => method.GetCustomAttributes<Consume>())
@@ -96,24 +96,24 @@ namespace Aether.ServiceBus
                 });
 
         /// <summary>
-        /// Top level method that delegates the registration of the <see cref="ICommandProcessor"/> to the pure
+        /// Top level method that delegates the registration of the <see cref="IMessageProcessor"/> to the pure
         /// consumers and the consumers and responders. The processes is slightly different for each, since the latter
         /// needs to respond via the mqtt message broker.
         /// </summary>
-        /// <param name="commandProcessor">The <see cref="ICommandProcessor"/> that is being registered.</param>
-        private void Register(ICommandProcessor commandProcessor)
+        /// <param name="messageProcessor">The <see cref="IMessageProcessor"/> that is being registered.</param>
+        private void Register(IMessageProcessor messageProcessor)
         {
-            RegisterConsumers(commandProcessor);
-            RegisterConsumersAndProviders(commandProcessor);
+            RegisterConsumers(messageProcessor);
+            RegisterConsumersAndProviders(messageProcessor);
         }
 
         /// <summary>
         /// Register the methods for the consumers and responders.
         /// </summary>
-        /// <param name="commandProcessor"></param>
-        private void RegisterConsumersAndProviders(ICommandProcessor commandProcessor) =>
+        /// <param name="messageProcessor"></param>
+        private void RegisterConsumersAndProviders(IMessageProcessor messageProcessor) =>
             // First we need to select the methods that are attributed with the ConsumeAndProduce attribute.
-            commandProcessor.GetType()
+            messageProcessor.GetType()
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .Where(method => !method.IsDefined(typeof(Consume)))
                 .Where(method => method.IsDefined(typeof(ConsumeAndRespond)))
@@ -124,7 +124,7 @@ namespace Aether.ServiceBus
 
                         // Create a unique identifier. It makes sure, that tow methods with the same name from different
                         // commandProcessors do not override each other.
-                        var uniqueIdentifier = commandProcessor.GetType().FullName + _buildIdentifier(method);
+                        var uniqueIdentifier = messageProcessor.GetType().FullName + _buildIdentifier(method);
 
                         // Get the existing list of consumers for that topic OR create a new one, if none existed.
                         var consumers = _consumers.GetOrAdd(attribute.Topic, new ConcurrentBag<IdentifiableAction>());
@@ -144,7 +144,7 @@ namespace Aether.ServiceBus
 
                                     // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
                                     // We take the result, since we mean to return a message.
-                                    var result = (BaseAetherMessage) method.Invoke(commandProcessor, new object[] {message});
+                                    var result = (BaseAetherMessage) method.Invoke(messageProcessor, new object[] {message});
                                     
                                     // Send the result of the invocation to the respondTo topic 
                                     _bus.PublishAsync( new MqttApplicationMessage(attribute.RespondTo, result.ToBytes()), attribute.QoS);
@@ -171,10 +171,10 @@ namespace Aether.ServiceBus
         /// <summary>
         ///  Register the pure consumers
         /// </summary>
-        /// <param name="commandProcessor">The <see cref="ICommandProcessor"/> that is being registered.</param>
-        private void RegisterConsumers(ICommandProcessor commandProcessor) =>
+        /// <param name="messageProcessor">The <see cref="IMessageProcessor"/> that is being registered.</param>
+        private void RegisterConsumers(IMessageProcessor messageProcessor) =>
             // First we need to select the methods that are attributed with the Consume attribute.
-            commandProcessor.GetType()
+            messageProcessor.GetType()
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .Where(method => method.IsDefined(typeof(Consume)))
                 .Where(method => !method.IsDefined(typeof(ConsumeAndRespond)))
@@ -185,7 +185,7 @@ namespace Aether.ServiceBus
                         
                         // Create a unique identifier. It makes sure, that tow methods with the same name from different
                         // commandProcessors do not override each other.
-                        var uniqueIdentifier = commandProcessor.GetType().FullName + _buildIdentifier(method);
+                        var uniqueIdentifier = messageProcessor.GetType().FullName + _buildIdentifier(method);
 
                         // Get the existing list of consumers for that topic OR create a new one, if none existed.
                         var consumers = _consumers.GetOrAdd(attribute.Topic, new ConcurrentBag<IdentifiableAction>());
@@ -204,7 +204,7 @@ namespace Aether.ServiceBus
                                     var message = BaseAetherMessage.Deserialize(bytes, type);
 
                                     // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
-                                    method.Invoke(commandProcessor, new object[] {message});
+                                    method.Invoke(messageProcessor, new object[] {message});
 
                                     // Should the logger string be set...
                                     if (NonNull(attribute.Logger))
@@ -216,7 +216,7 @@ namespace Aether.ServiceBus
                 );
 
         /// <summary>
-        /// Build a unique string for each method of each <see cref="ICommandProcessor"/>>
+        /// Build a unique string for each method of each <see cref="IMessageProcessor"/>>
         /// </summary>
         /// <param name="method"><see cref="MethodInfo"/> that describes the registered method.</param>
         /// <returns>The unique identifier string.</returns>
