@@ -50,6 +50,20 @@ namespace Aether.ServiceBus
         #region Public Methods
 
         /// <summary>
+        /// Publish a message to the mqtt message broker.
+        /// </summary>
+        /// <param name="topic"></param>
+        /// <param name="message"></param>
+        /// <param name="qoS"></param>
+        /// <typeparam name="T"></typeparam>
+        public void Publish<T>(string topic, T message, MqttQualityOfService qoS = MqttQualityOfService.ExactlyOnce)
+            where T : BaseAetherMessage
+        {
+            var applicationMessage = new MqttApplicationMessage(topic, message.ToBytes());
+            _bus.PublishAsync(applicationMessage, qoS);
+        }
+
+        /// <summary>
         /// Top level method for registering a <see cref="IMessageProcessor"/>. Arbitrarily many
         /// <see cref="IMessageProcessor"/> can be registered.
         /// </summary>
@@ -144,10 +158,12 @@ namespace Aether.ServiceBus
 
                                     // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
                                     // We take the result, since we mean to return a message.
-                                    var result = (BaseAetherMessage) method.Invoke(messageProcessor, new object[] {message});
-                                    
+                                    var result =
+                                        (BaseAetherMessage) method.Invoke(messageProcessor, new object[] {message});
+
                                     // Send the result of the invocation to the respondTo topic 
-                                    _bus.PublishAsync( new MqttApplicationMessage(attribute.RespondTo, result.ToBytes()), attribute.QoS);
+                                    _bus.PublishAsync(new MqttApplicationMessage(attribute.RespondTo, result.ToBytes()),
+                                        attribute.QoS);
 
                                     // Should the logger string be set...
                                     if (NonNull(attribute.Logger))
@@ -156,13 +172,12 @@ namespace Aether.ServiceBus
                                         _bus.PublishAsync(
                                             new MqttApplicationMessage(attribute.Logger, message.ToBytes()),
                                             attribute.LoggerQoS);
-                                        
+
                                         // ..send the produces message to the message logger.
                                         _bus.PublishAsync(
                                             new MqttApplicationMessage(attribute.Logger, result.ToBytes()),
                                             attribute.LoggerQoS);
                                     }
-
                                 })
                         );
                     }
@@ -182,7 +197,7 @@ namespace Aether.ServiceBus
                     {
                         // Get the attribute
                         var attribute = method.GetCustomAttribute<Consume>();
-                        
+
                         // Create a unique identifier. It makes sure, that tow methods with the same name from different
                         // commandProcessors do not override each other.
                         var uniqueIdentifier = messageProcessor.GetType().FullName + _buildIdentifier(method);
@@ -209,7 +224,9 @@ namespace Aether.ServiceBus
                                     // Should the logger string be set...
                                     if (NonNull(attribute.Logger))
                                         // ..send the received message to the message logger
-                                        _bus.PublishAsync( new MqttApplicationMessage(attribute.Logger, message.ToBytes()), attribute.LoggerQoS);
+                                        _bus.PublishAsync(
+                                            new MqttApplicationMessage(attribute.Logger, message.ToBytes()),
+                                            attribute.LoggerQoS);
                                 })
                         );
                     }
