@@ -131,6 +131,9 @@ namespace Aether.ServiceBus
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .Where(method => !method.IsDefined(typeof(Consume)))
                 .Where(method => method.IsDefined(typeof(ConsumeAndRespond)))
+                .Where(method => method.GetParameters().Length == 1)
+                .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.GetParameters()[0].ParameterType))
+                .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.ReturnType))
                 .ForEach(method =>
                     {
                         // Get the attribute 
@@ -193,6 +196,9 @@ namespace Aether.ServiceBus
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .Where(method => method.IsDefined(typeof(Consume)))
                 .Where(method => !method.IsDefined(typeof(ConsumeAndRespond)))
+                .Where(method => method.ReturnType == typeof(void))
+                .Where(method => method.GetParameters().Length == 1)
+                .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.GetParameters()[0].ParameterType))
                 .ForEach(method =>
                     {
                         // Get the attribute
@@ -216,21 +222,42 @@ namespace Aether.ServiceBus
                                     var type = method.GetParameters()[0].ParameterType;
 
                                     // Deserialize the bytes into a BaseAetherMessage
-                                    var message = BaseAetherMessage.Deserialize(bytes, type);
+                                    BaseAetherMessage aetherMessage;
+                                    try
+                                    {
+                                        aetherMessage = BaseAetherMessage.Deserialize(bytes, type);
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        Console.WriteLine(e);
+                                        Console.WriteLine(
+                                            $"{nameof(BaseAetherMessage.Deserialize)} failed for type {type.FullName}");
+                                        throw;
+                                    }
 
                                     // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
-                                    method.Invoke(messageProcessor, new object[] {message});
+                                    try
+                                    {
+                                        method.Invoke(messageProcessor, new object[] {aetherMessage});
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        Console.WriteLine(e);
+                                        Console.WriteLine(
+                                            $"Invoking method {method.Name} failed with parameter {type.FullName}");
+                                        throw;
+                                    }
 
                                     // Should the logger string be set...
                                     if (NonNull(attribute.Logger))
                                         // ..send the received message to the message logger
                                         _bus.PublishAsync(
-                                            new MqttApplicationMessage(attribute.Logger, message.ToBytes()),
-                                            attribute.LoggerQoS);
+                                            new MqttApplicationMessage(attribute.Logger, bytes), attribute.LoggerQoS);
                                 })
                         );
                     }
                 );
+        
 
         /// <summary>
         /// Build a unique string for each method of each <see cref="IMessageProcessor"/>>

@@ -48,7 +48,7 @@ namespace Aether.ServiceBus.Messages
         /// <exception cref="ArgumentException"></exception>
         public static BaseAetherMessage Deserialize(byte[] bytes, Type type)
         {
-            if (!type.IsAssignableFrom(typeof(BaseAetherMessage)))
+            if (!typeof(BaseAetherMessage).IsAssignableFrom(type))
                 throw new ArgumentException($"The type {type.FullName} does not inherit from {typeof(BaseAetherMessage).FullName}");
             
             var instance = (BaseAetherMessage) Activator.CreateInstance(type);
