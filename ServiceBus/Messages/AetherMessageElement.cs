@@ -54,7 +54,7 @@ namespace Aether.ServiceBus.Messages
 
             // ... else cast the value to an array
             var array = (Array) value;
-            
+
             // Determine the length of the array
             var arrayLength = BitConverter.GetBytes(array.Length).ToArray();
 
@@ -136,14 +136,15 @@ namespace Aether.ServiceBus.Messages
         private static byte[] ConvertClass(object value)
         {
             // If is null, return the representation of null
-            if  (IsNull(value)) return Constants.Null;
+            if (IsNull(value)) return Constants.Null;
 
             // At the moment only string, AetherMessageElement and X509Certificate2 is implemented.
             var bytes = value switch
             {
-                string stringValue => Constants.Utf8Encoding.GetBytes(stringValue),
-                BaseAetherMessage aetherValue => aetherValue._serialize(),
-                X509Certificate2 certificate2Value => certificate2Value.RawData,
+                string val => Constants.Utf8Encoding.GetBytes(val),
+                BaseAetherMessage val => val._serialize(),
+                X509Certificate2 val => val.RawData,
+                Type val => Constants.Utf8Encoding.GetBytes(val.AssemblyQualifiedName),
                 _ => throw new ArgumentException($"Unsupported type: {value.GetType().FullName}")
             };
 
@@ -164,11 +165,19 @@ namespace Aether.ServiceBus.Messages
         /// is the target of the deserialization.</param>
         /// <typeparam name="T"></typeparam>
         /// <returns></returns>
-        protected uint _deserialize<T>(byte[] buffer, T message) where T : BaseAetherMessage, new()
-            => message.GetType()
+        protected T _deserialize<T>(byte[] buffer, T message) where T : BaseAetherMessage, new()
+        {
+//            var typeIdent = ResolveTypeIdent(buffer);
+//            var myType = GetType().FullName;
+//            if (typeIdent != myType) return null;
+//
+            message.GetType()
                 .GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .Aggregate<PropertyInfo, uint>(0,
                     (bufPos, property) => ConvertToValue(property, buffer, message, bufPos));
+            
+            return message;
+        }
 
 
         /// <summary>
@@ -185,11 +194,11 @@ namespace Aether.ServiceBus.Messages
         private uint ConvertToValue(PropertyInfo property, byte[] buffer, AetherMessageElement message, uint bufPos)
         {
             var type = property.PropertyType;
-            
+
             object value;
 
             uint valueSize;
-            
+
             Func<byte[], object> converter;
 
             // If type is NOT an array
@@ -293,7 +302,7 @@ namespace Aether.ServiceBus.Messages
         private Func<byte[], uint, (Func<byte[], object>, uint)> ConvertClass(Type type)
         {
             Func<byte[], uint, (Func<byte[], object>, uint)> converterBuilder;
-            
+
             // BaseAetherMessage 
             if (type.IsSubclassOf(typeof(AetherMessageElement)))
                 converterBuilder = BuildClassConverter(
@@ -311,7 +320,14 @@ namespace Aether.ServiceBus.Messages
                 converterBuilder = BuildClassConverter(
                     bytes => Constants.Utf8Encoding.GetString(bytes),
                     bytes => null);
-
+            
+            // Type
+            else if (type == typeof(Type))
+                converterBuilder = BuildClassConverter(
+                    bytes => Type.GetType(Constants.Utf8Encoding.GetString(bytes)),
+                    bytes => null);
+            
+            
             else
                 throw new ArgumentException($"Unsupported type {type.FullName}");
 
@@ -450,6 +466,7 @@ namespace Aether.ServiceBus.Messages
             var slice = sourceBuffer.Skip((int) position).Take((int) valueSize).ToArray();
             return converter(slice);
         }
+
 
         #endregion
 
@@ -622,6 +639,7 @@ namespace Aether.ServiceBus.Messages
                 (IsNull(_utf8Encoding) ? (_utf8Encoding = new UTF8Encoding()) : _utf8Encoding);
 
             private static UTF8Encoding _utf8Encoding;
+
             public static uint DateTimeSize =>
                 (_dateTimeSize == 0 ? (_dateTimeSize = (uint) Marshal.SizeOf(DateTime.Now.Ticks)) : _dateTimeSize);
 

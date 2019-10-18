@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 
 namespace Aether.ServiceBus.Messages
 {
@@ -11,11 +12,22 @@ namespace Aether.ServiceBus.Messages
     /// </summary>
     public class BaseAetherMessage : AetherMessageElement
     {
+        private Type _messageType;
+
+        public Type OriginalMessageType
+        {
+            get => _messageType??= GetType();
+            set => _messageType ??= value;
+        }
+
+        private bool _isValid = false;
+        public bool IsValid() => _isValid;
+        
         /// <summary>
         /// Converts a object of BaseAetherMessage into a <code>byte[]</code>.
         /// </summary>
         /// <returns>The binary representation of an object.</returns>
-        public byte[] ToBytes() => _serialize();
+        public byte[] Serialize() => _serialize();
 
         /// <summary>
         /// Calculate the size of the message in binary format, without converting it first.
@@ -37,8 +49,12 @@ namespace Aether.ServiceBus.Messages
         public void Deserialize(byte[] bytes)
         {
             _deserialize(bytes, this);
+            SetValidity(this, OriginalMessageType);
         }
 
+        private void SetValidity(BaseAetherMessage instance, Type type) =>
+            instance._isValid = instance.GetType() == type;
+        
         /// <summary>
         /// Instantiates a <see cref="BaseAetherMessage"/> from binary.
         /// </summary>
@@ -53,16 +69,20 @@ namespace Aether.ServiceBus.Messages
             
             var instance = (BaseAetherMessage) Activator.CreateInstance(type);
             instance._deserialize(bytes, instance);
+
+            instance._isValid = instance.GetType() == instance.OriginalMessageType;
             return instance;
         }
 
         /// <summary>
-        /// Constructor from which a <see cref="BaseAetherMessage"/> can be built.
+        /// Constructor from which a <see cref="T:BaseAetherMessage"/> can be built.
         /// </summary>
-        /// <param name="bytes">The binary representation of a <see cref="BaseAetherMessage"/>.</param>
+        /// <param name="bytes">The binary representation of a <see cref="BaseAetherMessage"/>.
+        /// </param>
         public BaseAetherMessage(byte[] bytes)
         {
-            _deserialize(bytes, this);
+            var instance = _deserialize(bytes, this);
+            instance.SetValidity(instance, OriginalMessageType);
         }
     }
 }

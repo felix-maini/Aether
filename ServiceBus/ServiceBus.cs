@@ -19,6 +19,10 @@ namespace Aether.ServiceBus
     {
         #region Private Fields
 
+        private readonly ServiceBusConfiguration _configuration;
+
+        private readonly SessionState _sessionState;
+
         /// <summary>
         /// The interface to the mqtt message broker.
         /// </summary>
@@ -35,12 +39,35 @@ namespace Aether.ServiceBus
 
         #region Contstructors
 
-        /// <summary>
-        /// The main constructor.
-        /// </summary>
-        /// <param name="connectionString">The connection string to the mqtt message broker.</param>
-        public ServiceBus(string connectionString)
+        /**
+         * 1: Neuentwicklung / Individualsoftware / Datenzentriert / Vergabeprojekt 
+         * 2: Neuentwicklung / Individualsoftware / Embedded / In-House
+         * 3: Weiterentwicklung / Software Produkt / Datenzentriert / In-House (Community)
+         * 4: Reengineering / Individual / Datenzentriert / Ausschreibung
+         */
+
+        public ServiceBus(IMqttClient mqttClient, ServiceBusConfiguration configuration = null)
         {
+            _configuration = configuration ?? new ServiceBusConfiguration();
+
+            _bus = mqttClient;
+            if (!mqttClient.IsConnected)
+                _sessionState = _bus.ConnectAsync().Result;
+        }
+
+        public ServiceBus(string host, int port, ServiceBusConfiguration configuration = null)
+        {
+            _configuration = configuration ?? new ServiceBusConfiguration();
+
+            var connectionString = host + ":" + port;
+            _bus = MqttClient.CreateAsync(connectionString).Result;
+            var ss = _bus.ConnectAsync().Result;
+        }
+
+        public ServiceBus(string connectionString, ServiceBusConfiguration configuration = null)
+        {
+            _configuration = configuration ?? new ServiceBusConfiguration();
+
             _bus = MqttClient.CreateAsync(connectionString).Result;
             var ss = _bus.ConnectAsync().Result;
         }
@@ -59,7 +86,7 @@ namespace Aether.ServiceBus
         public void Publish<T>(string topic, T message, MqttQualityOfService qoS = MqttQualityOfService.ExactlyOnce)
             where T : BaseAetherMessage
         {
-            var applicationMessage = new MqttApplicationMessage(topic, message.ToBytes());
+            var applicationMessage = new MqttApplicationMessage(topic, message.Serialize());
             _bus.PublishAsync(applicationMessage, qoS);
         }
 
@@ -157,30 +184,48 @@ namespace Aether.ServiceBus
                                     var type = method.GetParameters()[0].ParameterType;
 
                                     // Deserialize the bytes into a BaseAetherMessage
-                                    var message = BaseAetherMessage.Deserialize(bytes, type);
+                                    BaseAetherMessage aetherMessage;
+                                    try
+                                    {
+                                        aetherMessage = BaseAetherMessage.Deserialize(bytes, type);
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        Console.WriteLine(e);
+                                        Console.WriteLine( $"{nameof(BaseAetherMessage.Deserialize)} failed for type {type.FullName}");
+                                        throw;
+                                    }
+
+                                    if (_configuration.StrictCasting && !aetherMessage.IsValid())
+                                        return;
 
                                     // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
                                     // We take the result, since we mean to return a message.
-                                    var result =
-                                        (BaseAetherMessage) method.Invoke(messageProcessor, new object[] {message});
-
-                                    // Send the result of the invocation to the respondTo topic 
-                                    _bus.PublishAsync(new MqttApplicationMessage(attribute.RespondTo, result.ToBytes()),
-                                        attribute.QoS);
+                                    BaseAetherMessage returnValue;
+                                    try
+                                    {
+                                        returnValue =
+                                            method.Invoke(messageProcessor, new object[] {aetherMessage}) as
+                                                BaseAetherMessage;
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        Console.WriteLine(e);
+                                        throw;
+                                    }
 
                                     // Should the logger string be set...
-                                    if (NonNull(attribute.Logger))
-                                    {
+                                    if (!string.IsNullOrWhiteSpace(attribute.Logger))
                                         // ..send the received message to the message logger and ...
-                                        _bus.PublishAsync(
-                                            new MqttApplicationMessage(attribute.Logger, message.ToBytes()),
+                                        _bus.PublishAsync(new MqttApplicationMessage(attribute.Logger, bytes),
                                             attribute.LoggerQoS);
 
-                                        // ..send the produces message to the message logger.
+                                    // Should the logger string be set...
+                                    if (NonNull(returnValue))
+                                        // Send the result of the invocation to the respondTo topic 
                                         _bus.PublishAsync(
-                                            new MqttApplicationMessage(attribute.Logger, result.ToBytes()),
-                                            attribute.LoggerQoS);
-                                    }
+                                            new MqttApplicationMessage(attribute.RespondTo, returnValue.Serialize()),
+                                            attribute.QoS);
                                 })
                         );
                     }
@@ -219,21 +264,23 @@ namespace Aether.ServiceBus
                                 bytes =>
                                 {
                                     // Get the type of the parameter of the method about to be invoked
-                                    var type = method.GetParameters()[0].ParameterType;
+                                    var aetherMessageType = method.GetParameters()[0].ParameterType;
 
                                     // Deserialize the bytes into a BaseAetherMessage
                                     BaseAetherMessage aetherMessage;
                                     try
                                     {
-                                        aetherMessage = BaseAetherMessage.Deserialize(bytes, type);
+                                        aetherMessage = BaseAetherMessage.Deserialize(bytes, aetherMessageType);
                                     }
                                     catch (Exception e)
                                     {
                                         Console.WriteLine(e);
                                         Console.WriteLine(
-                                            $"{nameof(BaseAetherMessage.Deserialize)} failed for type {type.FullName}");
+                                            $"{nameof(BaseAetherMessage.Deserialize)} failed for type {aetherMessageType.FullName}");
                                         throw;
                                     }
+
+                                    if (_configuration.StrictCasting && !aetherMessage.IsValid()) return;
 
                                     // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
                                     try
@@ -244,12 +291,12 @@ namespace Aether.ServiceBus
                                     {
                                         Console.WriteLine(e);
                                         Console.WriteLine(
-                                            $"Invoking method {method.Name} failed with parameter {type.FullName}");
+                                            $"Invoking method {method.Name} failed with parameter {aetherMessageType.FullName}");
                                         throw;
                                     }
 
                                     // Should the logger string be set...
-                                    if (NonNull(attribute.Logger))
+                                    if (!string.IsNullOrWhiteSpace(attribute.Logger))
                                         // ..send the received message to the message logger
                                         _bus.PublishAsync(
                                             new MqttApplicationMessage(attribute.Logger, bytes), attribute.LoggerQoS);
@@ -257,7 +304,7 @@ namespace Aether.ServiceBus
                         );
                     }
                 );
-        
+
 
         /// <summary>
         /// Build a unique string for each method of each <see cref="IMessageProcessor"/>>
