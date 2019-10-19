@@ -10,8 +10,8 @@ namespace Aether.ServiceBus
 
         public MqttQualityOfService ConsumeMaxQoS { get; set; } = MqttQualityOfService.ExactlyOnce;
 
-        public MqttQualityOfService RespondMinQos { get; set; } = MqttQualityOfService.AtMostOnce;
+        public MqttQualityOfService RespondToMinQos { get; set; } = MqttQualityOfService.AtMostOnce;
         
-        public MqttQualityOfService RespondMaxQos { get; set; } = MqttQualityOfService.ExactlyOnce;
+        public MqttQualityOfService RespondToMaxQos { get; set; } = MqttQualityOfService.ExactlyOnce;
     }
 }

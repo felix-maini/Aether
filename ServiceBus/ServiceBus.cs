@@ -233,8 +233,8 @@ namespace Aether.ServiceBus
                                         // Send the result of the invocation to the respondTo topic 
                                         _bus.PublishAsync(
                                             new MqttApplicationMessage(attribute.RespondTo, returnValue.Serialize()),
-                                            attribute.QoS >= _configuration.ConsumeMinQoS
-                                                ? attribute.QoS <= _configuration.ConsumeMaxQoS
+                                            attribute.QoS >= _configuration.RespondToMinQos
+                                                ? attribute.QoS <= _configuration.RespondToMaxQos
                                                     ? attribute.QoS
                                                     : _configuration.ConsumeMaxQoS
                                                 : _configuration.ConsumeMinQoS
