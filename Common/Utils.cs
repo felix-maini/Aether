@@ -39,46 +39,5 @@ namespace Aether.Common
             foreach (var element in source)
                 action(element);
         }
-
-        /// <summary>
-        /// An extension method to iterate over a collection of <see cref="Tuple{T,TU}"/>.
-        /// </summary>
-        /// <param name="source">The <see cref="IEnumerable{(T,TU)}"/> collection you want to iterate over.</param>
-        /// <param name="action">The <see cref="Action{(T,TU)}"/> that is executed with each element of the collection.</param>
-        /// <typeparam name="T">The type of the first element of the tuple.</typeparam>
-        /// <typeparam name="TU">The type of the second element of tuple.</typeparam>
-        /// <exception cref="ArgumentNullException"></exception>
-        public static void ForEach<T, TU>(this IEnumerable<(T, TU)> source, Action<T, TU> action)
-        {
-            if (IsNull(source))
-                throw new ArgumentNullException(nameof(source));
-            if (IsNull(action))
-                throw new ArgumentNullException(nameof(action));
-            foreach (var (element0, element1) in source)
-                action(element0, element1);
-        }
-
-        /// <summary>
-        /// A optional type. Can either be null, or return a value of a generic type.
-        /// </summary>
-        /// <typeparam name="T">The type of the element, that can possible be contained by the optional.</typeparam>
-        public class Optional<T> where T : class
-        {
-            private readonly T _obj = null;
-
-            public Optional(T obj) => _obj = obj;
-
-            public bool IsNull => _obj == null;
-
-            public bool NonNull => !IsNull;
-
-            public T Get()
-            {
-                if (IsNull)
-                    throw new NullReferenceException(
-                        "The object inside this Optional is null. Check with IsNull for null safety.");
-                return _obj;
-            }
-        }
     }
 }

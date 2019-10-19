@@ -30,7 +30,7 @@ namespace Aether.ServiceBus.Messages
                 .GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .Select(property => property.GetValue(this))
                 .Select(ConvertToBytes)
-                .Aggregate<byte[], byte[]>(null, (current, bytes) => current == null
+                .Aggregate<byte[], byte[]>(null, (current, bytes) => IsNull(current)
                     ? bytes
                     : current.Concat(bytes).ToArray());
 
@@ -460,7 +460,7 @@ namespace Aether.ServiceBus.Messages
             uint position,
             uint valueSize)
         {
-            if (sourceBuffer == null || sourceBuffer.Count < (position + valueSize) || converter == null)
+            if (IsNull(sourceBuffer) || sourceBuffer.Count < (position + valueSize) || IsNull(converter))
                 throw new ArgumentNullException($"Encoder is null");
 
             var slice = sourceBuffer.Skip((int) position).Take((int) valueSize).ToArray();
@@ -482,7 +482,7 @@ namespace Aether.ServiceBus.Messages
 
         private static uint SizeOf(object value)
             =>
-                value == null
+                IsNull(value)
                     ? Constants.NullSize
                     : value.GetType().IsArray
                         ? ((Array) value).Cast<object>().Aggregate<object, uint>(Constants.ArraySize,
@@ -511,7 +511,7 @@ namespace Aether.ServiceBus.Messages
         }
 
         private static uint SizeOfClass(object value)
-            => value == null
+            => IsNull(value)
                 ? Constants.NullSize
                 : Constants.SizeSize + value switch
                 {
@@ -522,7 +522,7 @@ namespace Aether.ServiceBus.Messages
                 };
 
         private static uint SizeOfValueType(object value)
-            => value == null
+            => IsNull(value)
                 ? Constants.NullSize
                 : value switch
                 {
