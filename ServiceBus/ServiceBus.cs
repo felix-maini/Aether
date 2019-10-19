@@ -21,7 +21,7 @@ namespace Aether.ServiceBus
 
         private readonly ServiceBusConfiguration _configuration;
 
-        private readonly SessionState _sessionState;
+        private SessionState _sessionState;
 
         /// <summary>
         /// The interface to the mqtt message broker.
@@ -47,10 +47,7 @@ namespace Aether.ServiceBus
         public ServiceBus(IMqttClient mqttClient, ServiceBusConfiguration configuration = null)
         {
             _configuration = configuration ?? new ServiceBusConfiguration();
-
             _bus = mqttClient;
-            if (!mqttClient.IsConnected)
-                _sessionState = _bus.ConnectAsync().Result;
         }
 
         /// <summary>
@@ -65,7 +62,6 @@ namespace Aether.ServiceBus
 
             var connectionString = host + ":" + port;
             _bus = MqttClient.CreateAsync(connectionString).Result;
-            var ss = _bus.ConnectAsync().Result;
         }
 
         /// <summary>
@@ -78,12 +74,21 @@ namespace Aether.ServiceBus
             _configuration = configuration ?? new ServiceBusConfiguration();
 
             _bus = MqttClient.CreateAsync(connectionString).Result;
-            var ss = _bus.ConnectAsync().Result;
         }
 
         #endregion
 
         #region Public Methods
+
+        /// <summary>
+        /// Connect the Mqtt client to the message broker
+        /// </summary>
+        /// <returns></returns>
+        public bool TryConnect()
+        {
+            _sessionState = _bus.ConnectAsync().Result;
+            return _bus.IsConnected;
+        }
 
         /// <summary>
         /// Publish a message to the mqtt message broker.
