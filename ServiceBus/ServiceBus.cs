@@ -39,13 +39,11 @@ namespace Aether.ServiceBus
 
         #region Contstructors
 
-        /**
-         * 1: Neuentwicklung / Individualsoftware / Datenzentriert / Vergabeprojekt 
-         * 2: Neuentwicklung / Individualsoftware / Embedded / In-House
-         * 3: Weiterentwicklung / Software Produkt / Datenzentriert / In-House (Community)
-         * 4: Reengineering / Individual / Datenzentriert / Ausschreibung
-         */
-
+        /// <summary>
+        /// Constructor
+        /// </summary>
+        /// <param name="mqttClient">An already existing IMqttClient </param>
+        /// <param name="configuration"></param>
         public ServiceBus(IMqttClient mqttClient, ServiceBusConfiguration configuration = null)
         {
             _configuration = configuration ?? new ServiceBusConfiguration();
@@ -55,6 +53,12 @@ namespace Aether.ServiceBus
                 _sessionState = _bus.ConnectAsync().Result;
         }
 
+        /// <summary>
+        /// Constructor
+        /// </summary>
+        /// <param name="host">The hostname or IP or the mqtt message broker</param>
+        /// <param name="port">The port on the host of the mqtt message broker</param>
+        /// <param name="configuration"></param>
         public ServiceBus(string host, int port, ServiceBusConfiguration configuration = null)
         {
             _configuration = configuration ?? new ServiceBusConfiguration();
@@ -64,6 +68,11 @@ namespace Aether.ServiceBus
             var ss = _bus.ConnectAsync().Result;
         }
 
+        /// <summary>
+        /// Constructor
+        /// </summary>
+        /// <param name="connectionString">A full connection string to the mqtt message broker</param>
+        /// <param name="configuration"></param>
         public ServiceBus(string connectionString, ServiceBusConfiguration configuration = null)
         {
             _configuration = configuration ?? new ServiceBusConfiguration();
@@ -196,7 +205,8 @@ namespace Aether.ServiceBus
                                         throw;
                                     }
 
-                                    if (_configuration.StrictCasting && !aetherMessage.IsValid())
+                                    // If strict converting is activated only continue if the aether message is valid
+                                    if (_configuration.StrictConversion && !aetherMessage.IsValid())
                                         return;
 
                                     // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
@@ -280,7 +290,7 @@ namespace Aether.ServiceBus
                                         throw;
                                     }
 
-                                    if (_configuration.StrictCasting && !aetherMessage.IsValid()) return;
+                                    if (_configuration.StrictConversion && !aetherMessage.IsValid()) return;
 
                                     // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
                                     try
