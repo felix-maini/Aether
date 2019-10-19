@@ -11,7 +11,8 @@ namespace Aether.ServiceBus
 {
     /// <summary>
     /// This is one of the heart pieces of the Aether project. It contains the <see cref="IMqttClient"/> for the
-    /// communication with the mqtt message broker, as well as the registry for the <see cref="IMessageProcessor"/>.
+    /// communication with the mqtt message broker, as well as the registry for the message processors. Message
+    /// processors are the instances that contains with <see cref="T:PubSubAttribute"/> attributed methods.
     /// With each incoming message the registry is traversed to forward the message to all methods that have subscribed
     /// to the topic.
     /// </summary>
@@ -105,12 +106,13 @@ namespace Aether.ServiceBus
         }
 
         /// <summary>
-        /// Top level method for registering a <see cref="IMessageProcessor"/>. Arbitrarily many
-        /// <see cref="IMessageProcessor"/> can be registered.
+        /// Top level method for registering a message processor. Arbitrarily many message processors can be registered.
         /// </summary>
-        /// <param name="messageProcessor">The <see cref="IMessageProcessor"/> that contains the methods, that are being
-        /// called when new messages arrive from the mqtt message bus.</param>
-        public void RegisterMessageProcessor(IMessageProcessor messageProcessor)
+        /// <param name="messageProcessor">
+        /// A class instance that contains the methods, that are being
+        /// called when new messages arrive from the mqtt message bus.
+        /// </param>
+        public void RegisterMessageProcessor<T>(T messageProcessor) where T : class
         {
             Register(messageProcessor);
 
@@ -121,11 +123,13 @@ namespace Aether.ServiceBus
 
         /// <summary>
         /// Here we subscribe to all the topics of interest. To do so, we first iterate over all methods of the
-        /// <see cref="IMessageProcessor"/> to find the methods with the <see cref="PubSubAttribute"/>. We then extract
+        /// class instance to find the methods with the <see cref="PubSubAttribute"/>. We then extract
         /// all the topics and register them at the mqtt message bus.
         /// </summary>
-        /// <param name="messageProcessor">The <see cref="IMessageProcessor"/> that is being registered.</param>
-        private void SubscribeToTopics(IMessageProcessor messageProcessor)
+        /// <param name="messageProcessor">
+        /// The class instance that contains with <see cref="T:PubSubAttribute"/> attributed methods.
+        /// </param>
+        private void SubscribeToTopics<T>(T messageProcessor) where T : class
         {
             messageProcessor.GetType()
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
@@ -158,12 +162,12 @@ namespace Aether.ServiceBus
                 });
 
         /// <summary>
-        /// Top level method that delegates the registration of the <see cref="IMessageProcessor"/> to the pure
+        /// Top level method that delegates the registration of the message processor to the pure
         /// consumers and the consumers and responders. The processes is slightly different for each, since the latter
         /// needs to respond via the mqtt message broker.
         /// </summary>
-        /// <param name="messageProcessor">The <see cref="IMessageProcessor"/> that is being registered.</param>
-        private void Register(IMessageProcessor messageProcessor)
+        /// <param name="messageProcessor">The class instance which methods are being registered.</param>
+        private void Register<T>(T messageProcessor) where T : class
         {
             RegisterConsumers(messageProcessor);
             RegisterConsumersAndProviders(messageProcessor);
@@ -173,7 +177,7 @@ namespace Aether.ServiceBus
         /// Register the methods for the consumers and responders.
         /// </summary>
         /// <param name="messageProcessor"></param>
-        private void RegisterConsumersAndProviders(IMessageProcessor messageProcessor) =>
+        private void RegisterConsumersAndProviders<T>(T messageProcessor) where T : class =>
             // First we need to select the methods that are attributed with the ConsumeAndProduce attribute.
             messageProcessor.GetType()
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
@@ -262,8 +266,8 @@ namespace Aether.ServiceBus
         /// <summary>
         ///  Register the pure consumers
         /// </summary>
-        /// <param name="messageProcessor">The <see cref="IMessageProcessor"/> that is being registered.</param>
-        private void RegisterConsumers(IMessageProcessor messageProcessor) =>
+        /// <param name="messageProcessor">An class object which contains attributed methods to register</param>
+        private void RegisterConsumers<T>(T messageProcessor) where T : class =>
             // First we need to select the methods that are attributed with the Consume attribute.
             messageProcessor.GetType()
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
@@ -335,7 +339,7 @@ namespace Aether.ServiceBus
 
 
         /// <summary>
-        /// Build a unique string for each method of each <see cref="IMessageProcessor"/>>
+        /// Build a unique string for each method of each message processor
         /// </summary>
         /// <param name="method"><see cref="MethodInfo"/> that describes the registered method.</param>
         /// <returns>The unique identifier string.</returns>
