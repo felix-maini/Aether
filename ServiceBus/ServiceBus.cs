@@ -112,12 +112,19 @@ namespace Aether.ServiceBus
         /// </summary>
         /// <param name="messageProcessor">The <see cref="IMessageProcessor"/> that is being registered.</param>
         private void SubscribeToTopics(IMessageProcessor messageProcessor)
-            =>
-                messageProcessor.GetType()
-                    .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                    .Where(method => method.IsDefined(typeof(PubSubAttribute)))
-                    .SelectMany(method => method.GetCustomAttributes<Consume>())
-                    .ForEach(attribute => _bus.SubscribeAsync(attribute.Topic, attribute.QoS));
+        {
+            messageProcessor.GetType()
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(method => method.IsDefined(typeof(PubSubAttribute)))
+                .Select(method => method.GetCustomAttribute<PubSubAttribute>())
+                .ForEach(attribute => _bus.SubscribeAsync(attribute.Topic,
+                    attribute.QoS >= _configuration.ConsumeMinQoS
+                        ? attribute.QoS <= _configuration.ConsumeMaxQoS
+                            ? attribute.QoS
+                            : _configuration.ConsumeMaxQoS
+                        : _configuration.ConsumeMinQoS
+                ));
+        }
 
         #endregion
 
@@ -192,7 +199,8 @@ namespace Aether.ServiceBus
                                     catch (Exception e)
                                     {
                                         Console.WriteLine(e);
-                                        Console.WriteLine( $"{nameof(BaseAetherMessage.Deserialize)} failed for type {type.FullName}");
+                                        Console.WriteLine(
+                                            $"{nameof(BaseAetherMessage.Deserialize)} failed for type {type.FullName}");
                                         throw;
                                     }
 
@@ -225,7 +233,12 @@ namespace Aether.ServiceBus
                                         // Send the result of the invocation to the respondTo topic 
                                         _bus.PublishAsync(
                                             new MqttApplicationMessage(attribute.RespondTo, returnValue.Serialize()),
-                                            attribute.QoS);
+                                            attribute.QoS >= _configuration.ConsumeMinQoS
+                                                ? attribute.QoS <= _configuration.ConsumeMaxQoS
+                                                    ? attribute.QoS
+                                                    : _configuration.ConsumeMaxQoS
+                                                : _configuration.ConsumeMinQoS
+                                        );
                                 })
                         );
                     }

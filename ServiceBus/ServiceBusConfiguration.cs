@@ -6,8 +6,12 @@ namespace Aether.ServiceBus
     {
         public bool StrictCasting { get; set; } = true;
 
-        public MqttQualityOfService ConsumeDefaultQoS { get; set; } = MqttQualityOfService.ExactlyOnce;
+        public MqttQualityOfService ConsumeMinQoS { get; set; } = MqttQualityOfService.AtMostOnce;
 
-        public MqttQualityOfService ConsumeAndRespondDefaultQoS { get; set; } = MqttQualityOfService.ExactlyOnce;
+        public MqttQualityOfService ConsumeMaxQoS { get; set; } = MqttQualityOfService.ExactlyOnce;
+
+        public MqttQualityOfService RespondMinQos { get; set; } = MqttQualityOfService.AtMostOnce;
+        
+        public MqttQualityOfService RespondMaxQos { get; set; } = MqttQualityOfService.ExactlyOnce;
     }
 }
