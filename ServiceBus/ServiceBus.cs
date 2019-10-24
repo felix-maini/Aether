@@ -184,7 +184,6 @@ namespace Aether.ServiceBus
                 .Where(method => !method.IsDefined(typeof(Consume)))
                 .Where(method => method.IsDefined(typeof(ConsumeAndRespond)))
                 .Where(method => method.GetParameters().Length >= 1)
-                .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.GetParameters()[0].ParameterType))
                 .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.ReturnType))
                 .ForEach(method =>
                     {
@@ -225,6 +224,8 @@ namespace Aether.ServiceBus
                                     {
                                         // Get the type of the parameter of the method about to be invoked
                                         var type = method.GetParameters()[0].ParameterType;
+                                        if (!typeof(BaseAetherMessage).IsAssignableFrom(method.GetParameters()[0]
+                                            .ParameterType)) return;
 
                                         // Deserialize the bytes into a BaseAetherMessage
                                         BaseAetherMessage aetherMessage;
@@ -292,8 +293,7 @@ namespace Aether.ServiceBus
                 .Where(method => method.IsDefined(typeof(Consume)))
                 .Where(method => !method.IsDefined(typeof(ConsumeAndRespond)))
                 .Where(method => method.ReturnType == typeof(void))
-                .Where(method => method.GetParameters().Length >= 1)
-                .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.GetParameters()[0].ParameterType))
+                .Where(method => method.GetParameters().Length <= 1)
                 .ForEach(method =>
                     {
                         // Get the attribute
@@ -332,6 +332,9 @@ namespace Aether.ServiceBus
 
                                     // Get the type of the parameter of the method about to be invoked
                                     var aetherMessageType = method.GetParameters()[0].ParameterType;
+
+                                    // The parameter must be of tyep BaseAetherMessage
+                                    if (!typeof(BaseAetherMessage).IsAssignableFrom(aetherMessageType)) return;
 
                                     // Deserialize the bytes into a BaseAetherMessage
                                     BaseAetherMessage aetherMessage;
