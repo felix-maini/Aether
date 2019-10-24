@@ -183,7 +183,7 @@ namespace Aether.ServiceBus
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .Where(method => !method.IsDefined(typeof(Consume)))
                 .Where(method => method.IsDefined(typeof(ConsumeAndRespond)))
-                .Where(method => method.GetParameters().Length == 1)
+                .Where(method => method.GetParameters().Length >= 1)
                 .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.GetParameters()[0].ParameterType))
                 .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.ReturnType))
                 .ForEach(method =>
