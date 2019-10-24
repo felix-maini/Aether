@@ -55,4 +55,15 @@ namespace Aether.ServiceBus
         {
         }
     }
+    
+    /// <summary>
+    /// This attribute marks a method as notifiable. It is not allowed to have any parameters and will not receive
+    /// any payload.
+    /// </summary>
+    public class Notify : PubSubAttribute
+    {
+        public Notify(string topic, MqttQualityOfService qoS, string logger, MqttQualityOfService loggerQoS) : base(topic, qoS, logger, loggerQoS)
+        {
+        }
+    }
 }

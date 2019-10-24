@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Data;
 using System.Linq;
 using System.Net.Mqtt;
 using System.Reflection;
@@ -106,6 +107,17 @@ namespace Aether.ServiceBus
         }
 
         /// <summary>
+        /// Notifications do not have a payload and are only meant notify a consumer.
+        /// </summary>
+        /// <param name="topic"></param>
+        /// <param name="qoS"></param>
+        public void Notify(string topic, MqttQualityOfService qoS = MqttQualityOfService.ExactlyOnce)
+        {
+            var applicationMessage = new MqttApplicationMessage(topic, new byte[] { });
+            _bus.PublishAsync(applicationMessage, qoS);
+        }
+
+        /// <summary>
         /// Top level method for registering a message processor. Arbitrarily many message processors can be registered.
         /// </summary>
         /// <param name="messageProcessor">
@@ -169,9 +181,66 @@ namespace Aether.ServiceBus
         /// <param name="messageProcessor">The class instance which methods are being registered.</param>
         private void Register<T>(T messageProcessor) where T : class
         {
+            RegisterNotifiers(messageProcessor);
             RegisterConsumers(messageProcessor);
             RegisterConsumersAndProviders(messageProcessor);
         }
+
+        /// <summary>
+        /// Register the methods for the consumers and responders.
+        /// </summary>
+        /// <param name="messageProcessor"></param>
+        private void RegisterNotifiers<T>(T messageProcessor) where T : class =>
+            // First we need to select the methods that are attributed with the ConsumeAndProduce attribute.
+            messageProcessor.GetType()
+                .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(method => !method.IsDefined(typeof(Consume)))
+                .Where(method => !method.IsDefined(typeof(ConsumeAndRespond)))
+                .Where(method => method.IsDefined(typeof(Notify)))
+                .Where(method => method.GetParameters().Length == 0)
+                .Where(method => method.ReturnType == typeof(void))
+                .ForEach(method =>
+                    {
+                        // Get the attribute 
+                        var attribute = method.GetCustomAttribute<Notify>();
+
+                        // Create a unique identifier. It makes sure, that tow methods with the same name from different
+                        // commandProcessors do not override each other.
+                        var uniqueIdentifier = messageProcessor.GetType().FullName + _buildIdentifier(method);
+
+                        // Get the existing list of consumers for that topic OR create a new one, if none existed.
+                        var consumers = _consumers.GetOrAdd(attribute.Topic, new ConcurrentBag<IdentifiableAction>());
+
+                        // Add an IdentifiableAction to the list of consumers. It takes its identifier and the payload
+                        // of the message that arrived.
+                        consumers.Add(
+                            new IdentifiableAction(
+                                uniqueIdentifier,
+                                bytes =>
+                                {
+                                    // Simply invoke the method without any payload or parameters.
+                                    try
+                                    {
+                                        method.Invoke(messageProcessor, null);
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        Console.WriteLine(e);
+                                        Console.WriteLine(
+                                            $"Invoking method {method.Name} failed without any parameter");
+                                        throw;
+                                    }
+
+                                    // Should the logger string be set...
+                                    if (!string.IsNullOrWhiteSpace(attribute.Logger))
+                                        // ... send the notification to the logger
+                                        _bus.PublishAsync(new MqttApplicationMessage(attribute.Logger, null),
+                                            attribute.LoggerQoS);
+                                })
+                        );
+                    }
+                );
+
 
         /// <summary>
         /// Register the methods for the consumers and responders.
@@ -183,8 +252,9 @@ namespace Aether.ServiceBus
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .Where(method => !method.IsDefined(typeof(Consume)))
                 .Where(method => method.IsDefined(typeof(ConsumeAndRespond)))
-                .Where(method => method.GetParameters().Length >= 1)
+                .Where(method => method.GetParameters().Length == 1)
                 .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.ReturnType))
+                .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.GetParameters()[0].ParameterType))
                 .ForEach(method =>
                     {
                         // Get the attribute 
@@ -204,60 +274,40 @@ namespace Aether.ServiceBus
                                 uniqueIdentifier,
                                 bytes =>
                                 {
-                                    BaseAetherMessage returnValue = null;
-                                    // In case the method does not have a parameter, simply invoke the method without.
-                                    if (method.GetParameters().Length == 0)
+                                    // Get the type of the parameter of the method about to be invoked
+                                    var type = method.GetParameters()[0].ParameterType;
+
+                                    // Deserialize the bytes into a BaseAetherMessage
+                                    BaseAetherMessage aetherMessage;
+                                    try
                                     {
-                                        try
-                                        {
-                                            returnValue = method.Invoke(messageProcessor, null) as BaseAetherMessage;
-                                        }
-                                        catch (Exception e)
-                                        {
-                                            Console.WriteLine(e);
-                                            Console.WriteLine(
-                                                $"Invoking method {method.Name} failed without any parameter");
-                                            throw;
-                                        }
+                                        aetherMessage = BaseAetherMessage.Deserialize(bytes, type);
                                     }
-                                    else
+                                    catch (Exception e)
                                     {
-                                        // Get the type of the parameter of the method about to be invoked
-                                        var type = method.GetParameters()[0].ParameterType;
-                                        if (!typeof(BaseAetherMessage).IsAssignableFrom(method.GetParameters()[0]
-                                            .ParameterType)) return;
+                                        Console.WriteLine(e);
+                                        Console.WriteLine(
+                                            $"{nameof(BaseAetherMessage.Deserialize)} failed for type {type.FullName}");
+                                        throw;
+                                    }
 
-                                        // Deserialize the bytes into a BaseAetherMessage
-                                        BaseAetherMessage aetherMessage;
-                                        try
-                                        {
-                                            aetherMessage = BaseAetherMessage.Deserialize(bytes, type);
-                                        }
-                                        catch (Exception e)
-                                        {
-                                            Console.WriteLine(e);
-                                            Console.WriteLine(
-                                                $"{nameof(BaseAetherMessage.Deserialize)} failed for type {type.FullName}");
-                                            throw;
-                                        }
+                                    // If strict converting is activated only continue if the aether message is valid
+                                    if (_configuration.StrictConversion && !aetherMessage.IsValid())
+                                        return;
 
-                                        // If strict converting is activated only continue if the aether message is valid
-                                        if (_configuration.StrictConversion && !aetherMessage.IsValid())
-                                            return;
-
-                                        // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
-                                        // We take the result, since we mean to return a message.
-                                        try
-                                        {
-                                            returnValue =
-                                                method.Invoke(messageProcessor, new object[] {aetherMessage}) as
-                                                    BaseAetherMessage;
-                                        }
-                                        catch (Exception e)
-                                        {
-                                            Console.WriteLine(e);
-                                            throw;
-                                        }
+                                    // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
+                                    // We take the result, since we mean to return a message.
+                                    BaseAetherMessage returnValue;
+                                    try
+                                    {
+                                        returnValue =
+                                            method.Invoke(messageProcessor, new object[] {aetherMessage}) as
+                                                BaseAetherMessage;
+                                    }
+                                    catch (Exception e)
+                                    {
+                                        Console.WriteLine(e);
+                                        throw;
                                     }
 
                                     // Should the logger string be set...
@@ -293,7 +343,8 @@ namespace Aether.ServiceBus
                 .Where(method => method.IsDefined(typeof(Consume)))
                 .Where(method => !method.IsDefined(typeof(ConsumeAndRespond)))
                 .Where(method => method.ReturnType == typeof(void))
-                .Where(method => method.GetParameters().Length <= 1)
+                .Where(method => method.GetParameters().Length == 1)
+                .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.GetParameters()[0].ParameterType))
                 .ForEach(method =>
                     {
                         // Get the attribute
@@ -313,23 +364,6 @@ namespace Aether.ServiceBus
                                 uniqueIdentifier,
                                 bytes =>
                                 {
-                                    // In case the method does not have a parameter, simply invoke the method without.
-                                    if (method.GetParameters().Length == 0)
-                                    {
-                                        try
-                                        {
-                                            method.Invoke(messageProcessor, null);
-                                            return;
-                                        }
-                                        catch (Exception e)
-                                        {
-                                            Console.WriteLine(e);
-                                            Console.WriteLine(
-                                                $"Invoking method {method.Name} failed without any parameters");
-                                            throw;
-                                        }
-                                    }
-
                                     // Get the type of the parameter of the method about to be invoked
                                     var aetherMessageType = method.GetParameters()[0].ParameterType;
 
