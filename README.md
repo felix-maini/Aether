@@ -15,7 +15,7 @@ instantiate with the received payload.
 
 ### 1: Couple Method to Topic
 ```c#
-public class MessageProcessor : IMessageProcessor
+public class MyMessageProcessor
     {
         [Consume("/events"]
         public void EventProcessor(MyEvent event)
@@ -32,7 +32,7 @@ public static class Program
 {
     public static void Main(string[] args) 
     {
-        var messageProcessor = new MessageProcessor();
+        var messageProcessor = new MyMessageProcessor();
         var serviceBus = new ServiceBus("localhost");
         
         serviceBus.RegisterMessageProcessor(messageProcessor);
