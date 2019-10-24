@@ -62,7 +62,7 @@ namespace Aether.ServiceBus
     /// </summary>
     public class Notify : PubSubAttribute
     {
-        public Notify(string topic, MqttQualityOfService qoS, string logger = null,
+        public Notify(string topic, MqttQualityOfService qoS = MqttQualityOfService.AtMostOnce, string logger = null,
             MqttQualityOfService loggerQoS = MqttQualityOfService.AtMostOnce) : base(topic, qoS, logger, loggerQoS)
         {
         }
