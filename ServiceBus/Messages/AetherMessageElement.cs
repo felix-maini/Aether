@@ -167,10 +167,6 @@ namespace Aether.ServiceBus.Messages
         /// <returns></returns>
         protected T _deserialize<T>(byte[] buffer, T message) where T : BaseAetherMessage, new()
         {
-//            var typeIdent = ResolveTypeIdent(buffer);
-//            var myType = GetType().FullName;
-//            if (typeIdent != myType) return null;
-//
             message.GetType()
                 .GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
                 .Aggregate<PropertyInfo, uint>(0,

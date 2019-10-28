@@ -1,10 +1,8 @@
 using System;
-using System.Collections.Concurrent;
-using System.Data;
+using System.Collections.Generic;
 using System.Linq;
 using System.Net.Mqtt;
 using System.Reflection;
-using Aether.Common;
 using Aether.ServiceBus.Messages;
 using static Aether.Common.Utils;
 
@@ -32,10 +30,10 @@ namespace Aether.ServiceBus
 
         /// <summary>
         /// The registry. The dictionary maps the name of a mqtt topic to a list of subscribed methods. The methods
-        /// are encapsulated in <see cref="IdentifiableAction"/> elements.
+        /// are encapsulated in action elements.
         /// </summary>
-        private readonly ConcurrentDictionary<string, ConcurrentBag<IdentifiableAction>> _consumers =
-            new ConcurrentDictionary<string, ConcurrentBag<IdentifiableAction>>();
+        private readonly Dictionary<string, Dictionary<string, Action<byte[]>>> _consumers =
+            new Dictionary<string, Dictionary<string, Action<byte[]>>>();
 
         #endregion
 
@@ -83,7 +81,81 @@ namespace Aether.ServiceBus
         #region Public Methods
 
         /// <summary>
-        /// Connect the Mqtt client to the message broker
+        /// Unsubscribe a dynamically added subscription.
+        /// </summary>
+        /// <param name="guid"></param>
+        /// <returns>
+        /// True if the subscription was actually registered and has been successfully removed.
+        /// False if the action was not found in the registry.
+        /// </returns>
+        public void UnsubscribeFromTopic(Guid guid)
+        {
+            // Convert guid to string
+            var id = guid.ToString();
+
+            // Get topic
+            var topic = _consumers.Keys.First(key => _consumers[key].ContainsKey(id));
+
+            // If the topic was not found, return
+            if (string.IsNullOrWhiteSpace(topic)) return;
+
+            // Remove the action
+            if (_consumers[topic].ContainsKey(id))
+                _consumers[topic].Remove(id);
+
+            // If it was the last registered action for the topic, remove the topic
+            if (_consumers[topic].Any()) return;
+            _bus.UnsubscribeAsync(topic);
+            _consumers.Remove(topic);
+        }
+
+        /// <summary>
+        /// Subscribe an action to a topic
+        /// </summary>
+        /// <param name="topic"></param>
+        /// <param name="action"></param>
+        /// <param name="qoS"></param>
+        /// <typeparam name="T"></typeparam>
+        /// <returns></returns>
+        public Guid SubscribeToTopic<T>(string topic, Action<T> action,
+            MqttQualityOfService qoS = MqttQualityOfService.ExactlyOnce) where T : BaseAetherMessage
+        {
+            // Create a new id for the action
+            var guid = Guid.NewGuid();
+            var id = guid.ToString();
+
+            // If there was not prior subscription to that topic, subscribe for that topic at the mqtt message broker
+            if (!_consumers.ContainsKey(topic))
+                _bus.SubscribeAsync(topic, qoS);
+
+            // Get the list of actions that belong to that topic
+            if (!_consumers.ContainsKey(topic))
+                _consumers[topic] = new Dictionary<string, Action<byte[]>>();
+
+            // Add the new action
+            // The action of the caller is wrapped in an action that does the casting of the message
+            _consumers[topic][id] = bytes =>
+            {
+                T message = null;
+                try
+                {
+                    message = BaseAetherMessage.Deserialize(bytes, typeof(T)) as T;
+                }
+                catch (Exception e)
+                {
+                    // ignore
+                }
+
+                // Execute the callers action with the message as parameter
+                action(message);
+            };
+
+            _subscribe();
+            return guid;
+        }
+
+        /// <summary>
+        /// Connect the Mqtt client to the message broker and subscribe the message stream
         /// </summary>
         /// <returns></returns>
         public bool TryConnect()
@@ -126,11 +198,11 @@ namespace Aether.ServiceBus
         /// </param>
         public void RegisterMessageProcessor<T>(T messageProcessor) where T : class
         {
-            Register(messageProcessor);
+            _register(messageProcessor);
 
-            SubscribeToTopics(messageProcessor);
+            _subscribeToTopics(messageProcessor);
 
-            Subscribe();
+            _subscribe();
         }
 
         /// <summary>
@@ -141,7 +213,7 @@ namespace Aether.ServiceBus
         /// <param name="messageProcessor">
         /// The class instance that contains with <see cref="T:PubSubAttribute"/> attributed methods.
         /// </param>
-        private void SubscribeToTopics<T>(T messageProcessor) where T : class
+        private void _subscribeToTopics<T>(T messageProcessor) where T : class
         {
             messageProcessor.GetType()
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
@@ -158,19 +230,26 @@ namespace Aether.ServiceBus
 
         #endregion
 
+        #region Private Methods
+
         /// <summary>
         /// Here we register the method that is being called by the <see cref="IMqttClient"/> whenever a message
         /// arrives from on of the topics we have subscribed ourselves to.
         /// </summary>
-        private void Subscribe()
+        private void _subscribe()
             =>
                 // Each new message will be passed through the MessageStream
                 _bus.MessageStream.Subscribe(msg =>
                 {
-                    // If consumers are registered for this topic... 
-                    if (_consumers.ContainsKey(msg.Topic))
-                        // ... then execute each of them them in parallel.
-                        _consumers[msg.Topic].AsParallel().ForEach(action => action.Execute(msg.Payload));
+                    // Return if there are no actions registered for this topic
+                    if (!_consumers.ContainsKey(msg.Topic)) return;
+
+                    var dict = _consumers[msg.Topic];
+                    
+                    foreach (var key in dict.Keys)
+                        dict[key](msg.Payload);
+
+//                        actions.Values.AsParallel().ForAll(action => action(msg.Payload));
                 });
 
         /// <summary>
@@ -179,18 +258,18 @@ namespace Aether.ServiceBus
         /// needs to respond via the mqtt message broker.
         /// </summary>
         /// <param name="messageProcessor">The class instance which methods are being registered.</param>
-        private void Register<T>(T messageProcessor) where T : class
+        private void _register<T>(T messageProcessor) where T : class
         {
-            RegisterNotifiers(messageProcessor);
-            RegisterConsumers(messageProcessor);
-            RegisterConsumersAndProviders(messageProcessor);
+            _registerNotifiers(messageProcessor);
+            _registerConsumers(messageProcessor);
+            _registerConsumersAndProviders(messageProcessor);
         }
 
         /// <summary>
-        /// Register the methods for the consumers and responders.
+        /// _register the methods for the consumers and responders.
         /// </summary>
         /// <param name="messageProcessor"></param>
-        private void RegisterNotifiers<T>(T messageProcessor) where T : class =>
+        private void _registerNotifiers<T>(T messageProcessor) where T : class =>
             // First we need to select the methods that are attributed with the ConsumeAndProduce attribute.
             messageProcessor.GetType()
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
@@ -209,44 +288,42 @@ namespace Aether.ServiceBus
                         var uniqueIdentifier = messageProcessor.GetType().FullName + _buildIdentifier(method);
 
                         // Get the existing list of consumers for that topic OR create a new one, if none existed.
-                        var consumers = _consumers.GetOrAdd(attribute.Topic, new ConcurrentBag<IdentifiableAction>());
+                        if (!_consumers.ContainsKey(attribute.Topic))
+                            _consumers[attribute.Topic] = new Dictionary<string, Action<byte[]>>();
 
                         // Add an IdentifiableAction to the list of consumers. It takes its identifier and the payload
                         // of the message that arrived.
-                        consumers.Add(
-                            new IdentifiableAction(
-                                uniqueIdentifier,
-                                bytes =>
+                        _consumers[attribute.Topic][uniqueIdentifier] =
+                            bytes =>
+                            {
+                                // Simply invoke the method without any payload or parameters.
+                                try
                                 {
-                                    // Simply invoke the method without any payload or parameters.
-                                    try
-                                    {
-                                        method.Invoke(messageProcessor, null);
-                                    }
-                                    catch (Exception e)
-                                    {
-                                        Console.WriteLine(e);
-                                        Console.WriteLine(
-                                            $"Invoking method {method.Name} failed without any parameter");
-                                        throw;
-                                    }
+                                    method.Invoke(messageProcessor, null);
+                                }
+                                catch (Exception e)
+                                {
+                                    Console.WriteLine(e);
+                                    Console.WriteLine(
+                                        $"Invoking method {method.Name} failed without any parameter");
+                                    throw;
+                                }
 
-                                    // Should the logger string be set...
-                                    if (!string.IsNullOrWhiteSpace(attribute.Logger))
-                                        // ... send the notification to the logger
-                                        _bus.PublishAsync(new MqttApplicationMessage(attribute.Logger, null),
-                                            attribute.LoggerQoS);
-                                })
-                        );
+                                // Should the logger string be set...
+                                if (!string.IsNullOrWhiteSpace(attribute.Logger))
+                                    // ... send the notification to the logger
+                                    _bus.PublishAsync(new MqttApplicationMessage(attribute.Logger, null),
+                                        attribute.LoggerQoS);
+                            };
                     }
                 );
 
 
         /// <summary>
-        /// Register the methods for the consumers and responders.
+        /// _register the methods for the consumers and responders.
         /// </summary>
         /// <param name="messageProcessor"></param>
-        private void RegisterConsumersAndProviders<T>(T messageProcessor) where T : class =>
+        private void _registerConsumersAndProviders<T>(T messageProcessor) where T : class =>
             // First we need to select the methods that are attributed with the ConsumeAndProduce attribute.
             messageProcessor.GetType()
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
@@ -265,78 +342,76 @@ namespace Aether.ServiceBus
                         var uniqueIdentifier = messageProcessor.GetType().FullName + _buildIdentifier(method);
 
                         // Get the existing list of consumers for that topic OR create a new one, if none existed.
-                        var consumers = _consumers.GetOrAdd(attribute.Topic, new ConcurrentBag<IdentifiableAction>());
+                        if (!_consumers.ContainsKey(attribute.Topic))
+                            _consumers[attribute.Topic] = new Dictionary<string, Action<byte[]>>();
 
                         // Add an IdentifiableAction to the list of consumers. It takes its identifier and the payload
                         // of the message that arrived.
-                        consumers.Add(
-                            new IdentifiableAction(
-                                uniqueIdentifier,
-                                bytes =>
+                        _consumers[attribute.Topic][uniqueIdentifier] =
+                            bytes =>
+                            {
+                                // Get the type of the parameter of the method about to be invoked
+                                var type = method.GetParameters()[0].ParameterType;
+
+                                // Deserialize the bytes into a BaseAetherMessage
+                                BaseAetherMessage aetherMessage;
+                                try
                                 {
-                                    // Get the type of the parameter of the method about to be invoked
-                                    var type = method.GetParameters()[0].ParameterType;
+                                    aetherMessage = BaseAetherMessage.Deserialize(bytes, type);
+                                }
+                                catch (Exception e)
+                                {
+                                    Console.WriteLine(e);
+                                    Console.WriteLine(
+                                        $"{nameof(BaseAetherMessage.Deserialize)} failed for type {type.FullName}");
+                                    throw;
+                                }
 
-                                    // Deserialize the bytes into a BaseAetherMessage
-                                    BaseAetherMessage aetherMessage;
-                                    try
-                                    {
-                                        aetherMessage = BaseAetherMessage.Deserialize(bytes, type);
-                                    }
-                                    catch (Exception e)
-                                    {
-                                        Console.WriteLine(e);
-                                        Console.WriteLine(
-                                            $"{nameof(BaseAetherMessage.Deserialize)} failed for type {type.FullName}");
-                                        throw;
-                                    }
+                                // If strict converting is activated only continue if the aether message is valid
+                                if (_configuration.StrictConversion && !aetherMessage.IsValid())
+                                    return;
 
-                                    // If strict converting is activated only continue if the aether message is valid
-                                    if (_configuration.StrictConversion && !aetherMessage.IsValid())
-                                        return;
+                                // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
+                                // We take the result, since we mean to return a message.
+                                BaseAetherMessage returnValue;
+                                try
+                                {
+                                    returnValue =
+                                        method.Invoke(messageProcessor, new object[] {aetherMessage}) as
+                                            BaseAetherMessage;
+                                }
+                                catch (Exception e)
+                                {
+                                    Console.WriteLine(e);
+                                    throw;
+                                }
 
-                                    // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
-                                    // We take the result, since we mean to return a message.
-                                    BaseAetherMessage returnValue;
-                                    try
-                                    {
-                                        returnValue =
-                                            method.Invoke(messageProcessor, new object[] {aetherMessage}) as
-                                                BaseAetherMessage;
-                                    }
-                                    catch (Exception e)
-                                    {
-                                        Console.WriteLine(e);
-                                        throw;
-                                    }
+                                // Should the logger string be set...
+                                if (!string.IsNullOrWhiteSpace(attribute.Logger))
+                                    // ..send the received message to the message logger and ...
+                                    _bus.PublishAsync(new MqttApplicationMessage(attribute.Logger, bytes),
+                                        attribute.LoggerQoS);
 
-                                    // Should the logger string be set...
-                                    if (!string.IsNullOrWhiteSpace(attribute.Logger))
-                                        // ..send the received message to the message logger and ...
-                                        _bus.PublishAsync(new MqttApplicationMessage(attribute.Logger, bytes),
-                                            attribute.LoggerQoS);
-
-                                    // Should the logger string be set...
-                                    if (NonNull(returnValue))
-                                        // Send the result of the invocation to the respondTo topic 
-                                        _bus.PublishAsync(
-                                            new MqttApplicationMessage(attribute.RespondTo, returnValue.Serialize()),
-                                            attribute.QoS >= _configuration.RespondToMinQos
-                                                ? attribute.QoS <= _configuration.RespondToMaxQos
-                                                    ? attribute.QoS
-                                                    : _configuration.ConsumeMaxQoS
-                                                : _configuration.ConsumeMinQoS
-                                        );
-                                })
-                        );
+                                // Should the logger string be set...
+                                if (NonNull(returnValue))
+                                    // Send the result of the invocation to the respondTo topic 
+                                    _bus.PublishAsync(
+                                        new MqttApplicationMessage(attribute.RespondTo, returnValue.Serialize()),
+                                        attribute.QoS >= _configuration.RespondToMinQos
+                                            ? attribute.QoS <= _configuration.RespondToMaxQos
+                                                ? attribute.QoS
+                                                : _configuration.ConsumeMaxQoS
+                                            : _configuration.ConsumeMinQoS
+                                    );
+                            };
                     }
                 );
 
         /// <summary>
-        ///  Register the pure consumers
+        ///  _register the pure consumers
         /// </summary>
         /// <param name="messageProcessor">An class object which contains attributed methods to register</param>
-        private void RegisterConsumers<T>(T messageProcessor) where T : class =>
+        private void _registerConsumers<T>(T messageProcessor) where T : class =>
             // First we need to select the methods that are attributed with the Consume attribute.
             messageProcessor.GetType()
                 .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
@@ -355,57 +430,55 @@ namespace Aether.ServiceBus
                         var uniqueIdentifier = messageProcessor.GetType().FullName + _buildIdentifier(method);
 
                         // Get the existing list of consumers for that topic OR create a new one, if none existed.
-                        var consumers = _consumers.GetOrAdd(attribute.Topic, new ConcurrentBag<IdentifiableAction>());
+                        if (!_consumers.ContainsKey(attribute.Topic))
+                            _consumers[attribute.Topic] = new Dictionary<string, Action<byte[]>>();
 
                         // Add an IdentifiableAction to the list of consumers. It takes its identifier and the payload
                         // of the message that arrived.
-                        consumers.Add(
-                            new IdentifiableAction(
-                                uniqueIdentifier,
-                                bytes =>
+                        _consumers[attribute.Topic][uniqueIdentifier] =
+                            bytes =>
+                            {
+                                // Get the type of the parameter of the method about to be invoked
+                                var aetherMessageType = method.GetParameters()[0].ParameterType;
+
+                                // The parameter must be of tyep BaseAetherMessage
+                                if (!typeof(BaseAetherMessage).IsAssignableFrom(aetherMessageType)) return;
+
+                                // Deserialize the bytes into a BaseAetherMessage
+                                BaseAetherMessage aetherMessage;
+                                try
                                 {
-                                    // Get the type of the parameter of the method about to be invoked
-                                    var aetherMessageType = method.GetParameters()[0].ParameterType;
+                                    aetherMessage = BaseAetherMessage.Deserialize(bytes, aetherMessageType);
+                                }
+                                catch (Exception e)
+                                {
+                                    Console.WriteLine(e);
+                                    Console.WriteLine(
+                                        $"{nameof(BaseAetherMessage.Deserialize)} failed for type {aetherMessageType.FullName}");
+                                    throw;
+                                }
 
-                                    // The parameter must be of tyep BaseAetherMessage
-                                    if (!typeof(BaseAetherMessage).IsAssignableFrom(aetherMessageType)) return;
+                                if (_configuration.StrictConversion && !aetherMessage.IsValid()) return;
 
-                                    // Deserialize the bytes into a BaseAetherMessage
-                                    BaseAetherMessage aetherMessage;
-                                    try
-                                    {
-                                        aetherMessage = BaseAetherMessage.Deserialize(bytes, aetherMessageType);
-                                    }
-                                    catch (Exception e)
-                                    {
-                                        Console.WriteLine(e);
-                                        Console.WriteLine(
-                                            $"{nameof(BaseAetherMessage.Deserialize)} failed for type {aetherMessageType.FullName}");
-                                        throw;
-                                    }
+                                // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
+                                try
+                                {
+                                    method.Invoke(messageProcessor, new object[] {aetherMessage});
+                                }
+                                catch (Exception e)
+                                {
+                                    Console.WriteLine(e);
+                                    Console.WriteLine(
+                                        $"Invoking method {method.Name} failed with parameter {aetherMessageType.FullName}");
+                                    throw;
+                                }
 
-                                    if (_configuration.StrictConversion && !aetherMessage.IsValid()) return;
-
-                                    // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
-                                    try
-                                    {
-                                        method.Invoke(messageProcessor, new object[] {aetherMessage});
-                                    }
-                                    catch (Exception e)
-                                    {
-                                        Console.WriteLine(e);
-                                        Console.WriteLine(
-                                            $"Invoking method {method.Name} failed with parameter {aetherMessageType.FullName}");
-                                        throw;
-                                    }
-
-                                    // Should the logger string be set...
-                                    if (!string.IsNullOrWhiteSpace(attribute.Logger))
-                                        // ..send the received message to the message logger
-                                        _bus.PublishAsync(
+                                // Should the logger string be set...
+                                if (!string.IsNullOrWhiteSpace(attribute.Logger))
+                                    // ..send the received message to the message logger
+                                    _bus.PublishAsync(
                                             new MqttApplicationMessage(attribute.Logger, bytes), attribute.LoggerQoS);
-                                })
-                        );
+                            };
                     }
                 );
 
@@ -419,23 +492,7 @@ namespace Aether.ServiceBus
             => method.GetParameters()
                 .Aggregate(method.ReturnType.FullName + method.Name,
                     (names, parameter) => names + "|" + parameter.Position + ':' + parameter.Name);
-    }
 
-    /// <summary>
-    /// This class simply encapsulates an <see cref="Action{T}"/> element to add the identifier attribute. It is
-    /// supposed to be used to find and deregister consumers in runtime.
-    /// </summary>
-    public class IdentifiableAction
-    {
-        public string Identifier { get; }
-        private Action<byte[]> Action { get; }
-
-        public void Execute(byte[] bytes) => Action(bytes);
-
-        public IdentifiableAction(string identifier, Action<byte[]> action)
-        {
-            Identifier = identifier;
-            Action = action;
-        }
+        #endregion
     }
 }
