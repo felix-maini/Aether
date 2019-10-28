@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -27,8 +28,10 @@ namespace Aether.ServiceBus.Messages
         /// <returns>A byte representation of the <see cref="AetherMessageElement"/></returns>
         protected byte[] _serialize()
             => GetType()
-                .GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                .Select(property => property.GetValue(this))
+                .GetMembers(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(member => !member.IsDefined(typeof(CompilerGeneratedAttribute)))
+                .Where(member => member is PropertyInfo || member is FieldInfo)
+                .Select(member => member.GetValue(this))
                 .Select(ConvertToBytes)
                 .Aggregate<byte[], byte[]>(null, (current, bytes) => IsNull(current)
                     ? bytes
@@ -37,17 +40,17 @@ namespace Aether.ServiceBus.Messages
         /// <summary>
         /// The granular method that iterates over properties and serializes them into binaries.
         /// </summary>
-        /// <param name="value">The value of that property.</param>
-        /// <returns>The byte representation of that property.</returns>
+        /// <param name="value">The value of that member.</param>
+        /// <returns>The byte representation of that member.</returns>
         private static byte[] ConvertToBytes(object value)
         {
-            // If the property null, return the binary value for null.
+            // If the member null, return the binary value for null.
             if (IsNull(value)) return Constants.Null;
 
             // Get the type of the value
             var type = value.GetType();
 
-            // If the property is NOT of type array...
+            // If the member is NOT of type array...
             if (!type.IsArray)
                 // ... convert the single value
                 return ConvertSingleElement(value);
@@ -68,7 +71,7 @@ namespace Aether.ServiceBus.Messages
         /// <summary>
         /// This method delegates the conversion of a single value.
         /// </summary>
-        /// <param name="value">The value of the property.</param>
+        /// <param name="value">The value of the member.</param>
         /// <returns>The byte representation of that value.</returns>
         /// <exception cref="ArgumentException"></exception>
         private static byte[] ConvertSingleElement(object value)
@@ -95,7 +98,7 @@ namespace Aether.ServiceBus.Messages
         /// <summary>
         /// Convert a primitive value into a byte array.
         /// </summary>
-        /// <param name="value">The value of the property.</param>
+        /// <param name="value">The value of the member.</param>
         /// <returns>The byte representation of the value.</returns>
         private static byte[] ConvertPrimitive(object value)
             => value switch
@@ -118,7 +121,7 @@ namespace Aether.ServiceBus.Messages
         /// Convert a ValueType into a byte array. At the moment, ony the <see cref="DateTime"/> valueType is
         /// implemented. Needs to be extended.
         /// </summary>
-        /// <param name="value">The value of the property.</param>
+        /// <param name="value">The value of the member.</param>
         /// <returns>The byte representation of the value.</returns>
         private static byte[] ConvertValueType(object value)
             => value switch
@@ -131,7 +134,7 @@ namespace Aether.ServiceBus.Messages
         /// <summary>
         /// Delegates the conversion of single class.
         /// </summary>
-        /// <param name="value">The value of the property.</param>
+        /// <param name="value">The value of the member.</param>
         /// <returns>The byte representation of the value.</returns>
         private static byte[] ConvertClass(object value)
         {
@@ -155,7 +158,7 @@ namespace Aether.ServiceBus.Messages
         #endregion
 
 
-        #region ToAetherMessage
+        #region Deserialize
 
         /// <summary>
         /// Deserializes a <see cref="BaseAetherMessage"/> 
@@ -168,28 +171,30 @@ namespace Aether.ServiceBus.Messages
         protected T _deserialize<T>(byte[] buffer, T message) where T : BaseAetherMessage, new()
         {
             message.GetType()
-                .GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
-                .Aggregate<PropertyInfo, uint>(0,
+                .GetMembers(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(member => !member.IsDefined(typeof(CompilerGeneratedAttribute)))
+                .Where(member => member is PropertyInfo || member is FieldInfo)
+                .Aggregate<MemberInfo, uint>(0,
                     (bufPos, property) => ConvertToValue(property, buffer, message, bufPos));
-            
+
             return message;
         }
 
 
         /// <summary>
-        /// Convert a part of the byte array into the value of type of the property. It does this by first inspecting
-        /// the property for its type and then creating a converter <code>Func{byte[], object}</code>. Together with
+        /// Convert a part of the byte array into the value of type of the member. It does this by first inspecting
+        /// the member for its type and then creating a converter <code>Func{byte[], object}</code>. Together with
         /// the calculated size of the value in bytes, the converter is then eventually passed to the
         /// <see cref="GetValue"/> function that executes the converter and actually transforms the bytes into the value.
         /// </summary>
-        /// <param name="property">The target of the conversion.</param>
+        /// <param name="member">The target of the conversion.</param>
         /// <param name="buffer">The buffer containing the serialized message.</param>
         /// <param name="message">The target of the entire conversion.</param>
         /// <param name="bufPos">The offset inside the buffer tell where to slice the next bytes from.</param>
         /// <returns></returns>
-        private uint ConvertToValue(PropertyInfo property, byte[] buffer, AetherMessageElement message, uint bufPos)
+        private uint ConvertToValue(MemberInfo member, byte[] buffer, AetherMessageElement message, uint bufPos)
         {
-            var type = property.PropertyType;
+            var type = member.Type();
 
             object value;
 
@@ -208,7 +213,7 @@ namespace Aether.ServiceBus.Messages
                     bufPos += Constants.SizeSize;
 
                 // Slice the correct amount of bytes of the buffer and execute the converter function on it the get the
-                // value meant for the property
+                // value meant for the member
                 value = GetValue(converter, buffer, bufPos, valueSize);
 
                 // Increase the offset by the size of the value
@@ -217,7 +222,7 @@ namespace Aether.ServiceBus.Messages
             else
             {
                 // Get the type of the elements in the array
-                var elementType = property.PropertyType.GetElementType();
+                var elementType = type.GetElementType();
 
                 // Get the size of the array
                 var arraySize = GetArraySize(bufPos, buffer);
@@ -245,31 +250,31 @@ namespace Aether.ServiceBus.Messages
                     bufPos += valueSize;
                 }
 
-                // Set the array as the value for the property
+                // Set the array as the value for the member
                 value = elementArray;
             }
 
-            // Give the property its value
-            property.SetValue(message, value);
+            // Give the member its value
+            member.SetValue(message, value);
 
-            // Return the buffer position. Each property needs to continue where the last ended
+            // Return the buffer position. Each member needs to continue where the last ended
             return bufPos;
         }
 
         /// <summary>
         /// Delegate the conversion of single element to more specialized functions.
         /// </summary>
-        /// <param name="type">Type of the property</param>
+        /// <param name="type">Type of the member</param>
         /// <param name="buffer">The byte buffer</param>
         /// <param name="bufPos">The offset of the buffer</param>
         /// <returns></returns>
         private (Func<byte[], object>, uint) ConvertSingleElement(Type type, byte[] buffer, uint bufPos)
         {
             // Prepare a function that takes some object and returns a byte array. Depending on the type of the
-            // property, the function will contain different conversion methods.
+            // member, the function will contain different conversion methods.
             Func<byte[], object> converter = null;
 
-            // Initialize the value size with 0. It holds the size of the value of the property converted and is 
+            // Initialize the value size with 0. It holds the size of the value of the member converted and is 
             // added the index of the buffer when the converted value is attached to it.
             uint valueSize = 0;
 
@@ -291,7 +296,7 @@ namespace Aether.ServiceBus.Messages
         /// <summary>
         /// Create the converter for when the type is a class type
         /// </summary>
-        /// <param name="type">Type of the property</param>
+        /// <param name="type">Type of the member</param>
         /// <returns>A function that can be invoked with the buffer and buffer position to create the converter
         /// function.</returns>
         /// <exception cref="ArgumentException"></exception>
@@ -316,14 +321,14 @@ namespace Aether.ServiceBus.Messages
                 converterBuilder = BuildClassConverter(
                     bytes => Constants.Utf8Encoding.GetString(bytes),
                     bytes => null);
-            
+
             // Type
             else if (type == typeof(Type))
                 converterBuilder = BuildClassConverter(
                     bytes => Type.GetType(Constants.Utf8Encoding.GetString(bytes)),
                     bytes => null);
-            
-            
+
+
             else
                 throw new ArgumentException($"Unsupported type {type.FullName}");
 
@@ -463,14 +468,14 @@ namespace Aether.ServiceBus.Messages
             return converter(slice);
         }
 
-
         #endregion
 
         #region GetSize
 
         protected uint _getMessageSize()
             => GetType()
-                .GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .GetMembers(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(member => member is PropertyInfo || member is FieldInfo)
                 .Select(property => property.GetValue(this))
                 .Select(SizeOf)
                 .Aggregate<uint, uint>(0, (messageSize, valueSize) => messageSize + valueSize);
@@ -535,48 +540,13 @@ namespace Aether.ServiceBus.Messages
         #region ToString
 
         public override string ToString()
-        {
-            var stringBuilder = new StringBuilder();
-            foreach (var property in this.GetType().GetProperties())
-            {
-                var valueString = string.Empty;
-
-                if (property.PropertyType.IsSubclassOf(typeof(AetherMessageElement)))
-                {
-                    valueString = property.GetValue(this).ToString();
-                    continue;
-                }
-
-                if (property.PropertyType == typeof(byte))
-                {
-                    var value = (byte) property.GetValue(this);
-                    valueString = value.ToString();
-                }
-                else if (property.PropertyType == typeof(byte[]))
-                {
-                    var value = (byte[]) property.GetValue(this);
-                    valueString = Constants.Utf8Encoding.GetString(value);
-                }
-                else if (property.PropertyType == typeof(ushort))
-                {
-                    var value = (ushort) property.GetValue(this);
-                    valueString = value.ToString();
-                }
-                else if (property.PropertyType == typeof(uint))
-                {
-                    var value = (uint) property.GetValue(this);
-                    valueString = value.ToString();
-                }
-                else if (property.PropertyType == typeof(string))
-                {
-                    valueString = (string) property.GetValue(this);
-                }
-
-                stringBuilder.AppendLine($"{property.Name}: \t {valueString}");
-            }
-
-            return stringBuilder.ToString();
-        }
+            => GetType()
+                .GetMembers(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                .Where(member => !member.IsDefined(typeof(CompilerGeneratedAttribute)))
+                .Where(member => member is PropertyInfo || member is FieldInfo)
+                .Aggregate(new StringBuilder(), (current, member) =>
+                    current.AppendLine($"{member.Name}: {member.GetValue(this)}\n"))
+                .ToString();
 
         #endregion
 
@@ -613,7 +583,7 @@ namespace Aether.ServiceBus.Messages
                 if (valueSize > 0)
                     // Prepare the converter for creating the certificate
                     converter = valueFunc;
-                // If the value is 0, that that means that the certificate property is null.
+                // If the value is 0, that that means that the certificate member is null.
                 // Null is represented as a 0 integer
                 else if (valueSize == 0)
                     // And tell the converter that it is supposed to simply return null
