@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Mqtt;
 using System.Reflection;
-using Aether.ServiceBus.Messages;
+using Newtonsoft.Json;
 using static Aether.Common.Utils;
 
 namespace Aether.ServiceBus
@@ -118,7 +118,7 @@ namespace Aether.ServiceBus
         /// <typeparam name="T"></typeparam>
         /// <returns></returns>
         public Guid SubscribeToTopic<T>(string topic, Action<T> action,
-            MqttQualityOfService qoS = MqttQualityOfService.ExactlyOnce) where T : BaseAetherMessage
+            MqttQualityOfService qoS = MqttQualityOfService.ExactlyOnce) where T : class, new()
         {
             // Create a new id for the action
             var guid = Guid.NewGuid();
@@ -139,7 +139,8 @@ namespace Aether.ServiceBus
                 T message = null;
                 try
                 {
-                    message = BaseAetherMessage.Deserialize(bytes, typeof(T)) as T;
+                    var jsonString = Utf8Encoding.GetString(bytes);
+                    message = JsonConvert.DeserializeObject<T>(jsonString);
                 }
                 catch (Exception e)
                 {
@@ -150,7 +151,6 @@ namespace Aether.ServiceBus
                 action(message);
             };
 
-            _subscribe();
             return guid;
         }
 
@@ -161,6 +161,7 @@ namespace Aether.ServiceBus
         public bool TryConnect()
         {
             _sessionState = _bus.ConnectAsync().Result;
+            _subscribe();
             return _bus.IsConnected;
         }
 
@@ -172,9 +173,10 @@ namespace Aether.ServiceBus
         /// <param name="qoS"></param>
         /// <typeparam name="T"></typeparam>
         public void Publish<T>(string topic, T message, MqttQualityOfService qoS = MqttQualityOfService.ExactlyOnce)
-            where T : BaseAetherMessage
+            where T : class
         {
-            var applicationMessage = new MqttApplicationMessage(topic, message.Serialize());
+            var jsonString = JsonConvert.SerializeObject(message);
+            var applicationMessage = new MqttApplicationMessage(topic, Utf8Encoding.GetBytes(jsonString));
             _bus.PublishAsync(applicationMessage, qoS);
         }
 
@@ -202,7 +204,6 @@ namespace Aether.ServiceBus
 
             _subscribeToTopics(messageProcessor);
 
-            _subscribe();
         }
 
         /// <summary>
@@ -330,8 +331,8 @@ namespace Aether.ServiceBus
                 .Where(method => !method.IsDefined(typeof(Consume)))
                 .Where(method => method.IsDefined(typeof(ConsumeAndRespond)))
                 .Where(method => method.GetParameters().Length == 1)
-                .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.ReturnType))
-                .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.GetParameters()[0].ParameterType))
+                .Where(method => method.ReturnType.IsClass)
+                .Where(method => method.GetParameters()[0].ParameterType.IsClass)
                 .ForEach(method =>
                     {
                         // Get the attribute 
@@ -353,32 +354,30 @@ namespace Aether.ServiceBus
                                 // Get the type of the parameter of the method about to be invoked
                                 var type = method.GetParameters()[0].ParameterType;
 
-                                // Deserialize the bytes into a BaseAetherMessage
-                                BaseAetherMessage aetherMessage;
+                                // Deserialize 
+                                object message;
                                 try
                                 {
-                                    aetherMessage = BaseAetherMessage.Deserialize(bytes, type);
+
+                                    var jsonString = Utf8Encoding.GetString(bytes);
+                                    message = JsonConvert.DeserializeObject(jsonString, type);
                                 }
                                 catch (Exception e)
                                 {
                                     Console.WriteLine(e);
                                     Console.WriteLine(
-                                        $"{nameof(BaseAetherMessage.Deserialize)} failed for type {type.FullName}");
+                                        $"{nameof(JsonConvert.DeserializeObject)} failed for type {type.FullName}");
                                     throw;
                                 }
 
-                                // If strict converting is activated only continue if the aether message is valid
-                                if (_configuration.StrictConversion && !aetherMessage.IsValid())
-                                    return;
-
-                                // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
+                                // Invoke the method of the commandProcessor 
                                 // We take the result, since we mean to return a message.
-                                BaseAetherMessage returnValue;
+                                object returnValue;
                                 try
                                 {
                                     returnValue =
-                                        method.Invoke(messageProcessor, new object[] {aetherMessage}) as
-                                            BaseAetherMessage;
+                                        method.Invoke(messageProcessor, new[] {message});
+
                                 }
                                 catch (Exception e)
                                 {
@@ -394,15 +393,19 @@ namespace Aether.ServiceBus
 
                                 // Should the logger string be set...
                                 if (NonNull(returnValue))
+                                {
+                                    var jsonString = JsonConvert.ToString(returnValue);
+                                    var returnBytes = Utf8Encoding.GetBytes(jsonString);
                                     // Send the result of the invocation to the respondTo topic 
                                     _bus.PublishAsync(
-                                        new MqttApplicationMessage(attribute.RespondTo, returnValue.Serialize()),
+                                        new MqttApplicationMessage(attribute.RespondTo, returnBytes),
                                         attribute.QoS >= _configuration.RespondToMinQos
                                             ? attribute.QoS <= _configuration.RespondToMaxQos
                                                 ? attribute.QoS
                                                 : _configuration.ConsumeMaxQoS
                                             : _configuration.ConsumeMinQoS
                                     );
+                                }
                             };
                     }
                 );
@@ -419,7 +422,7 @@ namespace Aether.ServiceBus
                 .Where(method => !method.IsDefined(typeof(ConsumeAndRespond)))
                 .Where(method => method.ReturnType == typeof(void))
                 .Where(method => method.GetParameters().Length == 1)
-                .Where(method => typeof(BaseAetherMessage).IsAssignableFrom(method.GetParameters()[0].ParameterType))
+                .Where(method => method.GetParameters()[0].ParameterType.IsClass)
                 .ForEach(method =>
                     {
                         // Get the attribute
@@ -439,37 +442,32 @@ namespace Aether.ServiceBus
                             bytes =>
                             {
                                 // Get the type of the parameter of the method about to be invoked
-                                var aetherMessageType = method.GetParameters()[0].ParameterType;
+                                var type = method.GetParameters()[0].ParameterType;
 
-                                // The parameter must be of tyep BaseAetherMessage
-                                if (!typeof(BaseAetherMessage).IsAssignableFrom(aetherMessageType)) return;
-
-                                // Deserialize the bytes into a BaseAetherMessage
-                                BaseAetherMessage aetherMessage;
+                                // Deserialize 
+                                object message;
                                 try
                                 {
-                                    aetherMessage = BaseAetherMessage.Deserialize(bytes, aetherMessageType);
+                                    var jsonString = Utf8Encoding.GetString(bytes);
+                                    message = JsonConvert.DeserializeObject(jsonString, type);
                                 }
                                 catch (Exception e)
                                 {
                                     Console.WriteLine(e);
                                     Console.WriteLine(
-                                        $"{nameof(BaseAetherMessage.Deserialize)} failed for type {aetherMessageType.FullName}");
+                                        $"{nameof(JsonConvert.DeserializeObject)} failed for type {type.FullName}");
                                     throw;
                                 }
 
-                                if (_configuration.StrictConversion && !aetherMessage.IsValid()) return;
-
-                                // Invoke the method of the commandProcessor with providing the BaseAetherMessage.
                                 try
                                 {
-                                    method.Invoke(messageProcessor, new object[] {aetherMessage});
+                                    method.Invoke(messageProcessor, new[] {message});
                                 }
                                 catch (Exception e)
                                 {
                                     Console.WriteLine(e);
                                     Console.WriteLine(
-                                        $"Invoking method {method.Name} failed with parameter {aetherMessageType.FullName}");
+                                        $"Invoking method {method.Name} failed with parameter {type.FullName}");
                                     throw;
                                 }
 

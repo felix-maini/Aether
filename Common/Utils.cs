@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 
 namespace Aether.Common
 {
@@ -10,6 +11,13 @@ namespace Aether.Common
     /// </summary>
     public static class Utils
     {
+        /// <summary>
+        /// An Utf8Encoder singleton
+        /// </summary>
+        public static UTF8Encoding Utf8Encoding => _utf8Encoding ??= new UTF8Encoding();
+        private static UTF8Encoding _utf8Encoding;
+        
+
         /// <summary>
         /// A easy check if a value is null or not.
         /// </summary>
@@ -40,49 +48,5 @@ namespace Aether.Common
             foreach (var element in source)
                 action(element);
         }
-
-        /// <summary>
-        /// Extension method for the MemberInfo to make allow for combining PropertyInfo and FieldInfo elements.
-        /// </summary>
-        /// <param name="member"></param>
-        /// <param name="instance"></param>
-        /// <param name="values"></param>
-        public static void SetValue(this MemberInfo member, object instance, object values)
-        {
-            switch (member)
-            {
-                case PropertyInfo info:
-                    info.SetValue(instance, values);
-                    break;
-                case FieldInfo info:
-                    info.SetValue(instance, values);
-                    break;
-            }
-        }
-
-        /// <summary>
-        /// Extension method for the MemberInfo to make allow for combining PropertyInfo and FieldInfo elements.
-        /// </summary>
-        /// <param name="member"></param>
-        public static Type Type(this MemberInfo member)
-            => member switch
-            {
-                PropertyInfo info => info.PropertyType,
-                FieldInfo info => info.FieldType,
-            };
-
-        /// <summary>
-        /// Extension method for the MemberInfo to make allow for combining PropertyInfo and FieldInfo elements.
-        /// </summary>
-        /// <param name="member"></param>
-        /// <param name="instance"></param>
-        /// <returns></returns>
-        public static object GetValue(this MemberInfo member, object instance)
-            => member switch
-            {
-                PropertyInfo info => info.GetValue(instance),
-                FieldInfo info => info.GetValue(instance),
-                _ => null
-            };
     }
 }
