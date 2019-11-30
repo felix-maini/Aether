@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net.Mqtt;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 using static Aether.Common.Utils;
 
@@ -124,17 +125,37 @@ namespace Aether.ServiceBus
             var guid = Guid.NewGuid();
             var id = guid.ToString();
 
+            // Helper variables to assess topics with wildcards correctly
+            Func<string, string, bool> condition;
+            string sanitizedTopic;
+
+            // Does the topic contain a wildcard?
+            if (_containsWildcards(topic))
+            {
+                // Convert the mqtt wildcards with proper regex terms
+                sanitizedTopic = _replaceWildCards(topic);
+                // To compare those terms use the Regex.IsMatch functionality
+                condition = Regex.IsMatch;
+            }
+            else
+            {
+                // If the topic does not contain any mqtt wildcards, than it can stay as it is
+                sanitizedTopic = topic;
+                // To compare the topics, use regular string comparision
+                condition = (key, topic) => key.Equals(topic);
+            }
+
             // If there was not prior subscription to that topic, subscribe for that topic at the mqtt message broker
-            if (!_consumers.ContainsKey(topic))
-                _bus.SubscribeAsync(topic, qoS);
+            if (!_consumers.Keys.Any(key => condition(key, sanitizedTopic)))
+                _bus.SubscribeAsync(sanitizedTopic, qoS);
 
             // Get the list of actions that belong to that topic
-            if (!_consumers.ContainsKey(topic))
-                _consumers[topic] = new Dictionary<string, Action<byte[]>>();
+            if (!_consumers.Keys.Any(key => condition(key, sanitizedTopic)))
+                _consumers[sanitizedTopic] = new Dictionary<string, Action<byte[]>>();
 
             // Add the new action
             // The action of the caller is wrapped in an action that does the casting of the message
-            _consumers[topic][id] = bytes =>
+            _consumers[sanitizedTopic][id] = bytes =>
             {
                 T message = null;
                 try
@@ -203,7 +224,6 @@ namespace Aether.ServiceBus
             _register(messageProcessor);
 
             _subscribeToTopics(messageProcessor);
-
         }
 
         /// <summary>
@@ -241,17 +261,14 @@ namespace Aether.ServiceBus
             =>
                 // Each new message will be passed through the MessageStream
                 _bus.MessageStream.Subscribe(msg =>
-                {
-                    // Return if there are no actions registered for this topic
-                    if (!_consumers.ContainsKey(msg.Topic)) return;
-
-                    var dict = _consumers[msg.Topic];
-                    
-                    foreach (var key in dict.Keys)
-                        dict[key](msg.Payload);
-
-//                        actions.Values.AsParallel().ForAll(action => action(msg.Payload));
-                });
+                    _consumers.Keys
+                        // Find each matching consumer dict
+                        .Where(key => Regex.IsMatch(msg.Topic, key))
+                        // For all matching dicts, get its actions
+                        .SelectMany(key => _consumers[key].Values)
+                        // Execute each action with the message payload
+                        .ForEach(action => action(msg.Payload))
+                );
 
         /// <summary>
         /// Top level method that delegates the registration of the message processor to the pure
@@ -265,6 +282,32 @@ namespace Aether.ServiceBus
             _registerConsumers(messageProcessor);
             _registerConsumersAndProviders(messageProcessor);
         }
+
+        /// <summary>
+        /// Helper method to replace the mqtt wildcards with regular expression wildcards. That way incoming messages
+        /// can be matched with all registered consumers that match the message's topic literally and via regex.
+        /// </summary>
+        /// <param name="topic"></param>
+        /// <returns></returns>
+        private static string _replaceWildCards(string topic)
+        {
+            // Replace the mqtt + single level wildcard with a regex 'one or more [a-zA-Z0-9]'
+            var sanitizedTopic = topic.Replace("+", "\\w+");
+
+            // Replace the mqtt # multi level wildcard with the regex 'zero or more [a-zA-Z0-9]' only when the # is on
+            // the last level of the topic. That is the only place where it is allowed
+            if (sanitizedTopic.EndsWith('#') || sanitizedTopic.EndsWith("#/"))
+                sanitizedTopic = sanitizedTopic.Replace("#", "\\w*");
+
+            return sanitizedTopic;
+        }
+
+        /// <summary>
+        /// Helper method to check whether a topic contains mqtt wildcards
+        /// </summary>
+        /// <param name="topic"></param>
+        /// <returns></returns>
+        private static bool _containsWildcards(string topic) => topic.Contains('#') || topic.Contains('+');
 
         /// <summary>
         /// _register the methods for the consumers and responders.
@@ -284,17 +327,21 @@ namespace Aether.ServiceBus
                         // Get the attribute 
                         var attribute = method.GetCustomAttribute<Notify>();
 
+                        var topic = _containsWildcards(attribute.Topic)
+                            ? _replaceWildCards(attribute.Topic)
+                            : attribute.Topic;
+
                         // Create a unique identifier. It makes sure, that tow methods with the same name from different
                         // commandProcessors do not override each other.
                         var uniqueIdentifier = messageProcessor.GetType().FullName + _buildIdentifier(method);
 
                         // Get the existing list of consumers for that topic OR create a new one, if none existed.
-                        if (!_consumers.ContainsKey(attribute.Topic))
-                            _consumers[attribute.Topic] = new Dictionary<string, Action<byte[]>>();
+                        if (!_consumers.Keys.Any(key => Regex.IsMatch(key, topic)))
+                            _consumers[topic] = new Dictionary<string, Action<byte[]>>();
 
                         // Add an IdentifiableAction to the list of consumers. It takes its identifier and the payload
                         // of the message that arrived.
-                        _consumers[attribute.Topic][uniqueIdentifier] =
+                        _consumers[topic][uniqueIdentifier] =
                             bytes =>
                             {
                                 // Simply invoke the method without any payload or parameters.
@@ -342,13 +389,18 @@ namespace Aether.ServiceBus
                         // commandProcessors do not override each other.
                         var uniqueIdentifier = messageProcessor.GetType().FullName + _buildIdentifier(method);
 
+                        // Should the topic contain mqtt wildcards, replace them with regex wildcards
+                        var topic = _containsWildcards(attribute.Topic)
+                            ? _replaceWildCards(attribute.Topic)
+                            : attribute.Topic;
+
                         // Get the existing list of consumers for that topic OR create a new one, if none existed.
-                        if (!_consumers.ContainsKey(attribute.Topic))
-                            _consumers[attribute.Topic] = new Dictionary<string, Action<byte[]>>();
+                        if (!_consumers.Keys.Any(key => Regex.IsMatch(key, topic)))
+                            _consumers[topic] = new Dictionary<string, Action<byte[]>>();
 
                         // Add an IdentifiableAction to the list of consumers. It takes its identifier and the payload
                         // of the message that arrived.
-                        _consumers[attribute.Topic][uniqueIdentifier] =
+                        _consumers[topic][uniqueIdentifier] =
                             bytes =>
                             {
                                 // Get the type of the parameter of the method about to be invoked
@@ -358,7 +410,6 @@ namespace Aether.ServiceBus
                                 object message;
                                 try
                                 {
-
                                     var jsonString = Utf8Encoding.GetString(bytes);
                                     message = JsonConvert.DeserializeObject(jsonString, type);
                                 }
@@ -377,7 +428,6 @@ namespace Aether.ServiceBus
                                 {
                                     returnValue =
                                         method.Invoke(messageProcessor, new[] {message});
-
                                 }
                                 catch (Exception e)
                                 {
@@ -432,13 +482,18 @@ namespace Aether.ServiceBus
                         // commandProcessors do not override each other.
                         var uniqueIdentifier = messageProcessor.GetType().FullName + _buildIdentifier(method);
 
+                        // Should the topic contain mqtt wildcards, replace them with regex wildcards
+                        var topic = _containsWildcards(attribute.Topic)
+                            ? _replaceWildCards(attribute.Topic)
+                            : attribute.Topic;
+
                         // Get the existing list of consumers for that topic OR create a new one, if none existed.
-                        if (!_consumers.ContainsKey(attribute.Topic))
-                            _consumers[attribute.Topic] = new Dictionary<string, Action<byte[]>>();
+                        if (!_consumers.Keys.Any(key => Regex.IsMatch(key, topic)))
+                            _consumers[topic] = new Dictionary<string, Action<byte[]>>();
 
                         // Add an IdentifiableAction to the list of consumers. It takes its identifier and the payload
                         // of the message that arrived.
-                        _consumers[attribute.Topic][uniqueIdentifier] =
+                        _consumers[topic][uniqueIdentifier] =
                             bytes =>
                             {
                                 // Get the type of the parameter of the method about to be invoked
@@ -475,7 +530,7 @@ namespace Aether.ServiceBus
                                 if (!string.IsNullOrWhiteSpace(attribute.Logger))
                                     // ..send the received message to the message logger
                                     _bus.PublishAsync(
-                                            new MqttApplicationMessage(attribute.Logger, bytes), attribute.LoggerQoS);
+                                        new MqttApplicationMessage(attribute.Logger, bytes), attribute.LoggerQoS);
                             };
                     }
                 );
